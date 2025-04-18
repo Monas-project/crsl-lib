@@ -1,57 +1,72 @@
-use sha2::{Digest, Sha256};
-use data_encoding::BASE32;
+use cid::Cid;
+use multihash::Multihash;
 
-pub struct Cid{
-    bytes: Vec<u8>,
-}
+/// For more details on these multicodec codes, see: 
+/// https://github.com/multiformats/multicodec/blob/master/table.csv
+const SHA2_256_CODE: u64 = 0x12;
+const RAW_CODE: u64 = 0x55;
 
-impl Cid{
-    /// Generates a new Cid from the given data and codec
-    pub fn generate(data: &[u8], codec: u8) -> Self{
-        let digest = sha256_digest(data);
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&[codec]);
-        bytes.extend_from_slice(&digest);
-        Self { bytes }
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ContentId(pub Cid);
+
+impl ContentId {
+    pub fn new(data: &[u8]) -> Self {
+        let code = SHA2_256_CODE;
+        let digest = Multihash::<64>::wrap(code, data).unwrap();
+        let cid = Cid::new_v1(RAW_CODE, digest);
+        ContentId(cid)
     }
 
-    /// Returns the bytes of the Cid
-    pub fn to_bytes(&self) -> &[u8]{
-        &self.bytes
+    pub fn to_string(&self) -> String {
+        self.0.to_string()
     }
 
-    /// Returns the BASE32 encoded string representation of the Cid
-    pub fn to_string(&self) -> String{
-        BASE32.encode(self.bytes.as_slice())
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.0.to_bytes()
     }
 }
-
-fn sha256_digest(data: &[u8]) -> Vec<u8>{
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize().to_vec()
-}
-
 
 #[cfg(test)]
-mod tests{
+mod tests {
     use super::*;
+
     #[test]
-    fn test_cid_generation(){
-        let data = b"test";
-        let codec = 0x01;
-        let cid = Cid::generate(data, codec);
-        assert_eq!(cid.to_bytes()[0], codec);
-        let encoded_string = cid.to_string();
-        assert!(!encoded_string.is_empty());
+    fn test_id_creation() {
+        let data = b"test data";
+        let content_id = ContentId::new(data);
+        assert_eq!(content_id.to_string(), content_id.0.to_string());
     }
     #[test]
-    fn test_cid_consistency(){
-        let data = b"test";
-        let codec = 0x01;
-        let cid1 = Cid::generate(data, codec);
-        let cid2 = Cid::generate(data, codec);
-        assert_eq!(cid1.to_bytes(), cid2.to_bytes());
-        assert_eq!(cid1.to_string(), cid2.to_string());
+    fn test_content_id_to_string() {
+        let data = b"test data";
+        let content_id = ContentId::new(data);
+        let cid_string = content_id.to_string();
+        assert!(!cid_string.is_empty());
+    }
+
+    #[test]
+    fn test_content_id_to_bytes() {
+        let data = b"test data";
+        let content_id = ContentId::new(data);
+        let cid_bytes = content_id.to_bytes();
+        assert!(!cid_bytes.is_empty());
+    }
+
+    #[test]
+    fn test_content_id_equality() {
+        let data1 = b"test data";
+        let data2 = b"test data";
+        let content_id1 = ContentId::new(data1);
+        let content_id2 = ContentId::new(data2);
+        assert_eq!(content_id1, content_id2);
+    }
+
+    #[test]
+    fn test_content_id_inequality() {
+        let data1 = b"data 1";
+        let data2 = b"data 2";
+        let content_id1 = ContentId::new(data1);
+        let content_id2 = ContentId::new(data2);
+        assert_ne!(content_id1, content_id2);
     }
 }
