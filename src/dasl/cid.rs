@@ -1,6 +1,7 @@
 use cid::Cid;
 use multibase::Base;
 use multihash::Multihash;
+use std::fmt;
 
 /// For more details on these multicodec codes, see:
 /// https://github.com/multiformats/multicodec/blob/master/table.csv
@@ -11,15 +12,23 @@ const RAW_CODE: u64 = 0x55;
 pub struct ContentId(pub Cid);
 
 impl ContentId {
+    /// Creates a new `ContentId` by generating a CID.
+    ///
+    /// This function takes a byte slice as input, hashes it using the SHA2-256 algorithm
+    /// via the `Multihash` library, and then creates a CID using the resulting hash.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A byte slice representing the data to be hashed and included in the CID.
+    ///
+    /// # Returns
+    ///
+    /// A new `ContentId` instance containing the generated CID.
     pub fn new(data: &[u8]) -> Self {
         let code = SHA2_256_CODE;
         let digest = Multihash::<64>::wrap(code, data).unwrap();
         let cid = Cid::new_v1(RAW_CODE, digest);
         ContentId(cid)
-    }
-
-    pub fn to_string(&self) -> String {
-        self.0.to_string()
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -28,6 +37,12 @@ impl ContentId {
 
     pub fn to_base(&self, base: Base) -> String {
         self.0.to_string_of_base(base).unwrap()
+    }
+}
+
+impl fmt::Display for ContentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -40,7 +55,6 @@ mod tests {
     fn test_default_cid_creation() {
         let data = b"test data";
         let content_id = ContentId::new(data);
-        println!("content_id: {}", content_id.to_string());
         assert_eq!(content_id.to_string(), content_id.0.to_string());
     }
 
@@ -49,7 +63,6 @@ mod tests {
         let data = b"test data";
         let content_id = ContentId::new(data);
         let base64_cid = content_id.to_base(Base::Base64);
-        println!("base64_cid: {}", base64_cid);
         assert!(!base64_cid.is_empty());
     }
 
