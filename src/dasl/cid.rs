@@ -38,6 +38,34 @@ impl ContentId {
     pub fn to_base(&self, base: Base) -> String {
         self.0.to_string_of_base(base).unwrap()
     }
+
+    pub fn verify(&self, data: &[u8]) -> bool {
+        let expected = ContentId::new(data);
+        self == &expected
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        let cid = Cid::try_from(bytes)?;
+        Ok(ContentId(cid))
+    }
+
+    /// Creates a `ContentId` from a string.
+    /// The default base is base32
+    pub fn from_string(s: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let cid = Cid::try_from(s)?;
+        Ok(ContentId(cid))
+    }
+
+    /// Creates a `ContentId` from a custom base-encoded string.
+    pub fn from_base(encoded: &str, base: Base) -> Result<Self, Box<dyn std::error::Error>> {
+        let (decoded_base, decoded_bytes) = multibase::decode(encoded)?;
+        // Check if the decoded base matches the expected base
+        if decoded_base != base {
+            return Err("Base encoding does not match the expected base".into());
+        }
+        let cid = Cid::try_from(decoded_bytes.as_slice())?;
+        Ok(ContentId(cid))
+    }
 }
 
 impl fmt::Display for ContentId {
