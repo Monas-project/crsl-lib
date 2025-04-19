@@ -27,9 +27,82 @@ impl<P, M> Entry<P, M> {
         &self.metadata
     }
     pub fn verify(&self) -> bool {
+        // todo: verify payload
         return true;
     }
-    pub fn verify_parent(&self) -> bool {
+    pub fn verify_parents(&self) -> bool {
+        // todo: verify parents
         return true;
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn create_test_cid(data: &[u8]) -> Cid {
+        use multihash::Multihash;
+        let code = 0x12;
+        let digest = Multihash::<64>::wrap(code, data).unwrap();
+        Cid::new_v1(0x55, digest)
+    }
+
+    #[test]
+    fn test_entry_creation_with_default_metadata() {
+        let payload = "test payload";
+        let parents_cid = create_test_cid(b"test");
+        let parents = vec![parents_cid];
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+        let entry = Entry::new(payload, parents, timestamp, metadata);
+        assert_eq!(entry.payload(), &payload);
+        assert_eq!(entry.parents(), &vec![parents_cid]);
+        assert_eq!(entry.timestamp(), timestamp);
+    }
+
+    #[test]
+    fn test_entry_with_custom_metadata() {
+        let payload = "test payload";
+        let parents_cid = create_test_cid(b"test");
+        let parents = vec![parents_cid];
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+        let _entry = Entry::new(payload, parents, timestamp, metadata);
+    }
+
+    #[test]
+    fn test_entry_multiple_parents() {
+        let payload = "test payload";
+        let parents_cid1 = create_test_cid(b"test1");
+        let parents_cid2 = create_test_cid(b"test2");
+        let parents = vec![parents_cid1, parents_cid2];
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+        let entry = Entry::new(payload, parents, timestamp, metadata);
+        assert_eq!(entry.parents().len(), 2);
+        assert_eq!(entry.parents()[0], parents_cid1);
+        assert_eq!(entry.parents()[1], parents_cid2);
+    }
+
+    #[test]
+    fn test_entry_verify() {
+        let payload = "test payload";
+        let parents_cid = create_test_cid(b"test");
+        let parents = vec![parents_cid];
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+        let _entry = Entry::new(payload, parents, timestamp, metadata);
+    }
+
+    #[test]
+    fn test_entry_verify_parents() {
+        let payload = "test payload";
+        let parents_cid = create_test_cid(b"test");
+        let parents = vec![parents_cid];
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+        let _entry = Entry::new(payload, parents, timestamp, metadata);
+    }
+    
 }
