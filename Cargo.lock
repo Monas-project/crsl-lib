@@ -103,6 +103,7 @@ version = "0.1.0"
 dependencies = [
  "cid",
  "dcbor",
+ "multibase",
  "multihash",
 ]
 

@@ -1,7 +1,8 @@
 use cid::Cid;
+use multibase::Base;
 use multihash::Multihash;
 
-/// For more details on these multicodec codes, see: 
+/// For more details on these multicodec codes, see:
 /// https://github.com/multiformats/multicodec/blob/master/table.csv
 const SHA2_256_CODE: u64 = 0x12;
 const RAW_CODE: u64 = 0x55;
@@ -24,18 +25,34 @@ impl ContentId {
     pub fn to_bytes(&self) -> Vec<u8> {
         self.0.to_bytes()
     }
+
+    pub fn to_base(&self, base: Base) -> String {
+        self.0.to_string_of_base(base).unwrap()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use multibase::Base;
 
     #[test]
-    fn test_id_creation() {
+    fn test_default_cid_creation() {
         let data = b"test data";
         let content_id = ContentId::new(data);
+        println!("content_id: {}", content_id.to_string());
         assert_eq!(content_id.to_string(), content_id.0.to_string());
     }
+
+    #[test]
+    fn test_base64_cid_creation() {
+        let data = b"test data";
+        let content_id = ContentId::new(data);
+        let base64_cid = content_id.to_base(Base::Base64);
+        println!("base64_cid: {}", base64_cid);
+        assert!(!base64_cid.is_empty());
+    }
+
     #[test]
     fn test_content_id_to_string() {
         let data = b"test data";
