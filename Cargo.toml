@@ -6,6 +6,7 @@ rust-version = "1.79"
 
 [dependencies]
 dcbor = "0.17.0"
-cid = "0.11.1"
+cid = { version = "0.11.1", features = ["serde"] }
 multihash = "0.19.3"
 multibase = "0.9.1"
+serde = { version = "1.0.215", features = ["derive"] }
