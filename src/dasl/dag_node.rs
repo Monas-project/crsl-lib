@@ -1,6 +1,13 @@
 use cid::Cid;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use serde::de::DeserializeOwned;
+use multihash::Multihash;
+
+/// For more details on these multicodec codes, see:
+/// https://github.com/multiformats/multicodec/blob/master/table.csv
+const SHA2_256_CODE: u64 = 0x12;
+const RAW_CODE: u64 = 0x55;
 
 /// A generic entry structure that represents a node in a directed acyclic graph (DAG).
 /// This structure can store any type of payload data and metadata, making it versatile for various use cases.
@@ -24,7 +31,11 @@ pub struct DagNode<P, M = BTreeMap<String, String>> {
     pub timestamp: u64,
     pub metadata: M,
 }
-impl<P, M> DagNode<P, M> {
+impl<P, M> DagNode<P, M> 
+where
+    P: Serialize + DeserializeOwned,
+    M: Serialize + DeserializeOwned,
+{
     pub fn new(payload: P, parents: Vec<Cid>, timestamp: u64, metadata: M) -> Self {
         DagNode {
             payload,
@@ -35,17 +46,18 @@ impl<P, M> DagNode<P, M> {
     }
 
     pub fn content_id(&self) -> Cid {
-        // todo: implement content id generation
-        // memo: Serialize this node itself as dCBOR → SHA2-256 → convert to Cid(v1)
-        unimplemented!()
+        let buf = self.to_bytes();
+        let mh = Multihash::<64>::wrap(SHA2_256_CODE, &buf).unwrap();
+        Cid::new_v1(RAW_CODE, mh)
     }
+
+    /// Serialize this node itself as CBOR → SHA2-256 → convert to Cid(v1)
     pub fn to_bytes(&self) -> Vec<u8> {
-        // todo: implement serialization
-        unimplemented!()
+        serde_cbor::to_vec(&self).unwrap()
     }
-    pub fn from_bytes(_buf: &[u8]) -> Self {
-        // todo: implement deserialization
-        unimplemented!()
+
+    pub fn from_bytes(buf: &[u8]) -> Self {
+        serde_cbor::from_slice(buf).unwrap()
     }
 
     pub fn payload(&self) -> &P {
@@ -84,61 +96,101 @@ mod tests {
 
     #[test]
     fn test_entry_creation_with_default_metadata() {
-        let payload = "test payload";
+        let payload = "test payload".to_string();
         let parents_cid = create_test_cid(b"test");
         let parents = vec![parents_cid];
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
-        let entry = DagNode::new(payload, parents, timestamp, metadata);
-        assert_eq!(entry.payload(), &payload);
-        assert_eq!(entry.parents(), &vec![parents_cid]);
-        assert_eq!(entry.timestamp(), timestamp);
+        let node = DagNode::new(payload.clone(), parents, timestamp, metadata);
+        assert_eq!(node.payload(), &payload);
+        assert_eq!(node.parents(), &vec![parents_cid]);
+        assert_eq!(node.timestamp(), timestamp);
     }
 
     #[test]
     fn test_entry_with_custom_metadata() {
-        let payload = "test payload";
+        let payload = "test payload".to_string();
         let parents_cid = create_test_cid(b"test");
         let parents = vec![parents_cid];
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
-        let entry = DagNode::new(payload, parents, timestamp, metadata);
-        assert!(entry.verify());
+
+        let node = DagNode::new(payload.clone(), parents, timestamp, metadata);
+
+        assert!(node.verify());
     }
 
     #[test]
     fn test_entry_multiple_parents() {
-        let payload = "test payload";
+        let payload = "test payload".to_string();
         let parents_cid1 = create_test_cid(b"test1");
         let parents_cid2 = create_test_cid(b"test2");
         let parents = vec![parents_cid1, parents_cid2];
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
-        let entry = DagNode::new(payload, parents, timestamp, metadata);
-        assert_eq!(entry.parents().len(), 2);
-        assert_eq!(entry.parents()[0], parents_cid1);
-        assert_eq!(entry.parents()[1], parents_cid2);
+
+        let node = DagNode::new(payload.clone(), parents, timestamp, metadata);
+
+        assert_eq!(node.parents().len(), 2);
+        assert_eq!(node.parents()[0], parents_cid1);
+        assert_eq!(node.parents()[1], parents_cid2);
+    }
+
+    #[test]
+    fn test_to_bytes_roundtrip() {
+        let payload = "test".to_string();
+        let parents_cid = create_test_cid(b"test");
+        let parents = vec![parents_cid];
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+
+        let node = DagNode::new(payload.clone(), parents.clone(), timestamp, metadata.clone());
+        let bytes = node.to_bytes();
+        let node2: DagNode<String, BTreeMap<String, String>> = DagNode::from_bytes(&bytes);
+
+        assert_eq!(node2.payload(), &payload);
+        assert_eq!(node2.parents(), &parents);
+        assert_eq!(node2.timestamp(), timestamp);
+        assert_eq!(node2.metadata(), &metadata);
+    }
+
+    #[test]
+    fn test_content_id() {
+        let payload = "test".to_string();
+        let parents_cid = create_test_cid(b"test");
+        let parents = vec![parents_cid];
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+        let node1 = DagNode::new(payload.clone(), parents.clone(), timestamp, metadata.clone());
+        let node2 = DagNode::new(payload.clone(), parents.clone(), timestamp, metadata.clone());
+        let content_id1 = node1.content_id();
+        let content_id2 = node2.content_id();
+        assert_eq!(content_id1.to_string(), content_id2.to_string());
     }
 
     #[test]
     fn test_entry_verify() {
-        let payload = "test payload";
+        let payload = "test payload".to_string();
         let parents_cid = create_test_cid(b"test");
         let parents = vec![parents_cid];
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
-        let entry = DagNode::new(payload, parents, timestamp, metadata);
-        assert!(entry.verify());
+        
+        let node = DagNode::new(payload.clone(), parents.clone(), timestamp, metadata.clone());
+
+        assert!(node.verify());
     }
 
     #[test]
     fn test_entry_verify_parents() {
-        let payload = "test payload";
+        let payload = "test payload".to_string();
         let parents_cid = create_test_cid(b"test");
         let parents = vec![parents_cid];
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
-        let entry = DagNode::new(payload, parents, timestamp, metadata);
-        assert!(entry.verify_parents());
+
+        let node = DagNode::new(payload.clone(), parents.clone(), timestamp, metadata.clone());
+
+        assert!(node.verify_parents());
     }
 }
