@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 ///
 /// # Type Parameters
 /// * `P` - Payload type that implements `Serialize` for CID generation.
-///         The serialization method for storage is up to the user.
+///   The serialization method for storage is up to the user.
 /// * `M` - The type of the metadata. Defaults to `BTreeMap<String, String>` if not specified.
 ///
 /// # Fields
@@ -26,7 +26,12 @@ pub struct DagNode<P, M = BTreeMap<String, String>> {
 }
 impl<P, M> DagNode<P, M> {
     pub fn new(payload: P, parents: Vec<Cid>, timestamp: u64, metadata: M) -> Self {
-        DagNode { payload, parents, timestamp, metadata }
+        DagNode {
+            payload,
+            parents,
+            timestamp,
+            metadata,
+        }
     }
 
     pub fn content_id(&self) -> Cid {
@@ -34,11 +39,11 @@ impl<P, M> DagNode<P, M> {
         // memo: Serialize this node itself as dCBOR → SHA2-256 → convert to Cid(v1)
         unimplemented!()
     }
-    pub fn to_bytes(&self) -> Vec<u8> { 
+    pub fn to_bytes(&self) -> Vec<u8> {
         // todo: implement serialization
         unimplemented!()
     }
-    pub fn from_bytes(_buf: &[u8]) -> Self { 
+    pub fn from_bytes(_buf: &[u8]) -> Self {
         // todo: implement deserialization
         unimplemented!()
     }
@@ -57,11 +62,11 @@ impl<P, M> DagNode<P, M> {
     }
     pub fn verify(&self) -> bool {
         // todo: verify payload
-        return true;
+        true
     }
     pub fn verify_parents(&self) -> bool {
         // todo: verify parents
-        return true;
+        true
     }
 }
 
@@ -136,5 +141,4 @@ mod tests {
         let entry = DagNode::new(payload, parents, timestamp, metadata);
         assert!(entry.verify_parents());
     }
-    
 }

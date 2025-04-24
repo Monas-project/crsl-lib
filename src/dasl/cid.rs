@@ -59,7 +59,10 @@ impl ContentId {
     /// Creates a `ContentId` from a custom base-encoded string.
     pub fn from_base(encoded: &str, base: Base) -> Self {
         let (decoded_base, decoded_bytes) = multibase::decode(encoded).unwrap();
-        assert_eq!(decoded_base, base, "Base encoding does not match the expected base");
+        assert_eq!(
+            decoded_base, base,
+            "Base encoding does not match the expected base"
+        );
         let cid = Cid::try_from(decoded_bytes.as_slice()).unwrap();
         ContentId(cid)
     }
@@ -166,5 +169,4 @@ mod tests {
         let content_id = ContentId::new(data1);
         assert!(!content_id.verify(data2));
     }
-    
 }
