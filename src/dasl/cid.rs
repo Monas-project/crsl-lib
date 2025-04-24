@@ -38,6 +38,34 @@ impl ContentId {
     pub fn to_base(&self, base: Base) -> String {
         self.0.to_string_of_base(base).unwrap()
     }
+
+    pub fn verify(&self, data: &[u8]) -> bool {
+        let expected = ContentId::new(data);
+        self == &expected
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let cid = Cid::try_from(bytes).unwrap();
+        ContentId(cid)
+    }
+
+    /// Creates a `ContentId` from a string.
+    /// The default base is base32
+    pub fn from_string(s: &str) -> Self {
+        let cid = Cid::try_from(s).unwrap();
+        ContentId(cid)
+    }
+
+    /// Creates a `ContentId` from a custom base-encoded string.
+    pub fn from_base(encoded: &str, base: Base) -> Self {
+        let (decoded_base, decoded_bytes) = multibase::decode(encoded).unwrap();
+        assert_eq!(
+            decoded_base, base,
+            "Base encoding does not match the expected base"
+        );
+        let cid = Cid::try_from(decoded_bytes.as_slice()).unwrap();
+        ContentId(cid)
+    }
 }
 
 impl fmt::Display for ContentId {
@@ -75,6 +103,33 @@ mod tests {
     }
 
     #[test]
+    fn test_content_id_from_string() {
+        let data = b"test data";
+        let content_id = ContentId::new(data);
+        let cid_string = content_id.to_string();
+        let content_id_from_string = ContentId::from_string(&cid_string);
+        assert_eq!(content_id, content_id_from_string);
+    }
+
+    #[test]
+    fn test_content_id_from_bytes() {
+        let data = b"test data";
+        let content_id = ContentId::new(data);
+        let cid_bytes = content_id.to_bytes();
+        let content_id_from_bytes = ContentId::from_bytes(&cid_bytes);
+        assert_eq!(content_id, content_id_from_bytes);
+    }
+
+    #[test]
+    fn test_content_id_from_base() {
+        let data = b"test data";
+        let content_id = ContentId::new(data);
+        let base64_cid = content_id.to_base(Base::Base64);
+        let content_id_from_base = ContentId::from_base(&base64_cid, Base::Base64);
+        assert_eq!(content_id, content_id_from_base);
+    }
+
+    #[test]
     fn test_content_id_to_bytes() {
         let data = b"test data";
         let content_id = ContentId::new(data);
@@ -98,5 +153,20 @@ mod tests {
         let content_id1 = ContentId::new(data1);
         let content_id2 = ContentId::new(data2);
         assert_ne!(content_id1, content_id2);
+    }
+
+    #[test]
+    fn test_content_id_verify() {
+        let data = b"test data";
+        let content_id = ContentId::new(data);
+        assert!(content_id.verify(data));
+    }
+
+    #[test]
+    fn test_content_id_verify_with_different_data() {
+        let data1 = b"test data1";
+        let data2 = b"test data2";
+        let content_id = ContentId::new(data1);
+        assert!(!content_id.verify(data2));
     }
 }
