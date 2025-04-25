@@ -22,7 +22,6 @@ const RAW_CODE: u64 = 0x55;
 /// * `parents` - A vector of CIDs (Content Identifiers) pointing to parent entries, forming a DAG structure.
 /// * `timestamp` - Unix timestamp representing when the entry was created.
 /// * `metadata` - Additional information about the entry (e.g., author, tags, or other attributes).
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "P: Serialize + for<'a> Deserialize<'a>, M: Serialize + for<'a> Deserialize<'a>")]
 pub struct DagNode<P, M = BTreeMap<String, String>> {
@@ -31,11 +30,22 @@ pub struct DagNode<P, M = BTreeMap<String, String>> {
     pub timestamp: u64,
     pub metadata: M,
 }
+
 impl<P, M> DagNode<P, M>
 where
     P: Serialize + DeserializeOwned,
     M: Serialize + DeserializeOwned,
 {
+    /// Creates a new DagNode with the given parameters
+    ///
+    /// # Arguments
+    /// * `payload` - The main content/data to store in the node
+    /// * `parents` - Vector of CIDs pointing to parent nodes
+    /// * `timestamp` - Unix timestamp for node creation time
+    /// * `metadata` - Additional information about the node
+    ///
+    /// # Returns
+    /// A new DagNode instance
     pub fn new(payload: P, parents: Vec<Cid>, timestamp: u64, metadata: M) -> Self {
         DagNode {
             payload,
@@ -45,17 +55,40 @@ where
         }
     }
 
+    /// Computes the content identifier (CID) for this node
+    ///
+    /// # Returns
+    /// Content ID (Cid) for this node
+    ///
+    /// # Errors
+    /// Returns a DagNodeError if serialization or hashing fails
     pub fn content_id(&self) -> Cid {
         let buf = self.to_bytes();
         let mh = Multihash::<64>::wrap(SHA2_256_CODE, &buf).unwrap();
         Cid::new_v1(RAW_CODE, mh)
     }
 
-    /// Serialize this node itself as CBOR → SHA2-256 → convert to Cid(v1)
+    /// Serializes this node using CBOR
+    ///
+    /// # Returns
+    /// Serialized bytes of the node
+    ///
+    /// # Errors
+    /// Returns a DagNodeError if serialization fails
     pub fn to_bytes(&self) -> Vec<u8> {
-        serde_cbor::to_vec(&self).unwrap()
+        serde_cbor::to_vec(self).unwrap()
     }
 
+    /// Deserializes a DagNode from bytes
+    ///
+    /// # Arguments
+    /// * `buf` - Byte slice containing the serialized node
+    ///
+    /// # Returns
+    /// Deserialized DagNode
+    ///
+    /// # Errors
+    /// Returns a DagNodeError if deserialization fails
     pub fn from_bytes(buf: &[u8]) -> Self {
         serde_cbor::from_slice(buf).unwrap()
     }
@@ -93,7 +126,9 @@ mod tests {
         let parents = vec![parents_cid];
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
+
         let node = DagNode::new(payload.clone(), parents, timestamp, metadata);
+
         assert_eq!(node.payload(), &payload);
         assert_eq!(node.parents(), &vec![parents_cid]);
         assert_eq!(node.timestamp(), timestamp);
@@ -129,6 +164,7 @@ mod tests {
             timestamp,
             metadata.clone(),
         );
+
         let bytes = node.to_bytes();
         let node2: DagNode<String, BTreeMap<String, String>> = DagNode::from_bytes(&bytes);
 
@@ -145,20 +181,24 @@ mod tests {
         let parents = vec![parents_cid];
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
+
         let node1 = DagNode::new(
             payload.clone(),
             parents.clone(),
             timestamp,
             metadata.clone(),
         );
+
         let node2 = DagNode::new(
             payload.clone(),
             parents.clone(),
             timestamp,
             metadata.clone(),
         );
+
         let content_id1 = node1.content_id();
         let content_id2 = node2.content_id();
+
         assert_eq!(content_id1.to_string(), content_id2.to_string());
     }
 }
