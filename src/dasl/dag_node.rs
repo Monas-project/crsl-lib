@@ -264,7 +264,7 @@ mod tests {
             metadata.clone(),
         );
         let different_cid = different_node.content_id();
-        
+
         assert!(!node.verify_self_integrity(&different_cid));
     }
 
@@ -307,15 +307,15 @@ mod tests {
             timestamp,
             metadata.clone(),
         );
-        
+
         // If the value becomes too large, encoding may not be possible.
         let initial_cid_string = node.content_id().to_string();
-        
+
         let parent2 = create_test_cid(b"b");
         node.add_parent(parent2);
-        
+
         let new_cid_string = node.content_id().to_string();
-        
+
         assert_ne!(initial_cid_string, new_cid_string);
     }
 
@@ -336,7 +336,7 @@ mod tests {
         let parent2 = create_test_cid(b"parent2");
         let parent3 = create_test_cid(b"parent3");
         let parent4 = create_test_cid(b"parent4");
-        
+
         node.add_parent(parent2);
         node.add_parent(parent3);
         node.add_parent(parent4);
