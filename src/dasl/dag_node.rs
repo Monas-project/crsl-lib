@@ -93,6 +93,26 @@ where
         serde_cbor::from_slice(buf).unwrap()
     }
 
+    /// Verifies the integrity of the node by comparing the calculated CID with the expected CID
+    ///
+    /// # Arguments
+    /// * `expected_cid` - The expected CID to compare against
+    ///
+    /// # Returns
+    /// `true` if the calculated CID matches the expected CID, `false` otherwise
+    pub fn verify_self_integrity(&self, expected_cid: &Cid) -> bool {
+        let recalculated = {
+            let buf = serde_cbor::to_vec(self).unwrap();
+            let mh = Multihash::<64>::wrap(SHA2_256_CODE, &buf).unwrap();
+            Cid::new_v1(RAW_CODE, mh)
+        };
+        recalculated == *expected_cid
+    }
+
+    pub fn add_parent(&mut self, cid: Cid) {
+        self.parents.push(cid);
+    }
+
     pub fn payload(&self) -> &P {
         &self.payload
     }
@@ -200,5 +220,131 @@ mod tests {
         let content_id2 = node2.content_id();
 
         assert_eq!(content_id1.to_string(), content_id2.to_string());
+    }
+
+    #[test]
+    fn test_verify_self_integrity_with_correct_cid() {
+        let payload = "test".to_string();
+        let parents_cid = create_test_cid(b"test");
+        let parents = vec![parents_cid];
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+
+        let node = DagNode::new(
+            payload.clone(),
+            parents.clone(),
+            timestamp,
+            metadata.clone(),
+        );
+
+        let correct_cid = node.content_id();
+        assert!(node.verify_self_integrity(&correct_cid));
+    }
+
+    #[test]
+    fn test_verify_self_integrity_with_wrong_cid() {
+        let payload = "test".to_string();
+        let parents_cid = create_test_cid(b"test");
+        let parents = vec![parents_cid];
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+
+        let node = DagNode::new(
+            payload.clone(),
+            parents.clone(),
+            timestamp,
+            metadata.clone(),
+        );
+
+        let different_payload = "different".to_string();
+        let different_node = DagNode::new(
+            different_payload,
+            parents.clone(),
+            timestamp,
+            metadata.clone(),
+        );
+        let different_cid = different_node.content_id();
+        
+        assert!(!node.verify_self_integrity(&different_cid));
+    }
+
+    #[test]
+    fn test_add_parent_basic() {
+        let payload = "test payload".to_string();
+        let parent1 = create_test_cid(b"parent1");
+        let initial_parents = vec![parent1];
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+
+        let mut node = DagNode::new(
+            payload.clone(),
+            initial_parents.clone(),
+            timestamp,
+            metadata.clone(),
+        );
+
+        assert_eq!(node.parents().len(), 1);
+        assert_eq!(node.parents()[0], parent1);
+        let parent2 = create_test_cid(b"parent2");
+        node.add_parent(parent2);
+
+        assert_eq!(node.parents().len(), 2);
+        assert_eq!(node.parents()[0], parent1);
+        assert_eq!(node.parents()[1], parent2);
+    }
+
+    #[test]
+    fn test_add_parent_changes_cid() {
+        let payload = "test".to_string();
+        let parent1 = create_test_cid(b"parent1");
+        let initial_parents = vec![parent1];
+        let timestamp = 1;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+
+        let mut node = DagNode::new(
+            payload.clone(),
+            initial_parents.clone(),
+            timestamp,
+            metadata.clone(),
+        );
+        
+        // If the value becomes too large, encoding may not be possible.
+        let initial_cid_string = node.content_id().to_string();
+        
+        let parent2 = create_test_cid(b"b");
+        node.add_parent(parent2);
+        
+        let new_cid_string = node.content_id().to_string();
+        
+        assert_ne!(initial_cid_string, new_cid_string);
+    }
+
+    #[test]
+    fn test_add_multiple_parents() {
+        let payload = "test payload".to_string();
+        let parent1 = create_test_cid(b"parent1");
+        let initial_parents = vec![parent1];
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+
+        let mut node = DagNode::new(
+            payload.clone(),
+            initial_parents.clone(),
+            timestamp,
+            metadata.clone(),
+        );
+        let parent2 = create_test_cid(b"parent2");
+        let parent3 = create_test_cid(b"parent3");
+        let parent4 = create_test_cid(b"parent4");
+        
+        node.add_parent(parent2);
+        node.add_parent(parent3);
+        node.add_parent(parent4);
+
+        assert_eq!(node.parents().len(), 4);
+        assert_eq!(node.parents()[0], parent1);
+        assert_eq!(node.parents()[1], parent2);
+        assert_eq!(node.parents()[2], parent3);
+        assert_eq!(node.parents()[3], parent4);
     }
 }
