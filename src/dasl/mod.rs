@@ -1,2 +1,2 @@
 pub mod cid;
-pub mod dag_node;
+pub mod node;
