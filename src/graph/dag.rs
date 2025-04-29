@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_no_cycle_in_simple_path() {
-        // 単純なパス A -> B -> C
+        // simple path A -> B -> C
         let mut storage = MockStorage::new();
         let cid_a = create_test_content_id(b"node_a");
         let cid_b = create_test_content_id(b"node_b");
@@ -241,14 +241,14 @@ mod tests {
         assert!(result.unwrap(), "true");
     }
 
-    // multi path cycle detection
-    //    A
-    //   ↗ ↘
-    //  B     C
-    // ↗ ↘   ↗
-    // D   E ← A
     #[test]
     fn test_multi_path_cycle_detection() {
+        // multi path cycle detection
+        //    A
+        //   ↗ ↘
+        //  B     C
+        // ↗ ↘   ↗
+        // D   E ← A
         let mut storage = MockStorage::new();
         let cid_a = create_test_content_id(b"node_a");
         let cid_b = create_test_content_id(b"node_b");
