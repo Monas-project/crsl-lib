@@ -86,10 +86,7 @@ mod tests {
 
         fn setup_graph(&mut self, structure: &[(Cid, Cid)]) {
             for (parent, child) in structure {
-                self.edges
-                    .entry(*parent)
-                    .or_default()
-                    .push(*child);
+                self.edges.entry(*parent).or_default().push(*child);
             }
         }
     }
