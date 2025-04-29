@@ -87,9 +87,9 @@ mod tests {
         fn setup_graph(&mut self, structure: &[(Cid, Cid)]) {
             for (parent, child) in structure {
                 self.edges
-                    .entry(parent.clone())
-                    .or_insert_with(Vec::new)
-                    .push(child.clone());
+                    .entry(*parent)
+                    .or_default()
+                    .push(*child);
             }
         }
     }
@@ -118,7 +118,7 @@ mod tests {
         let cid1 = create_test_content_id(b"node1");
         let cid2 = create_test_content_id(b"node2");
         let cid3 = create_test_content_id(b"node3");
-        storage.setup_graph(&[(cid1.clone(), cid2.clone()), (cid2.clone(), cid3.clone())]);
+        storage.setup_graph(&[(cid1, cid2), (cid2, cid3)]);
         let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
 
         // 新しいノードを追加
