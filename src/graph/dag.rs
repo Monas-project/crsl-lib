@@ -25,7 +25,7 @@ pub struct DagGraph<S, P, M>
 where
     S: NodeStorage<P, M>,
 {
-    storage: S,
+    pub storage: S,
     _p_marker: PhantomData<P>,
     _m_marker: PhantomData<M>,
 }
