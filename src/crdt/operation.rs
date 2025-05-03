@@ -1,29 +1,29 @@
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use serde::Serialize;
+use ulid::Ulid;
 
-pub type OperationId = u128;
+pub type OperationId = Ulid;
 pub type Author = String;
-pub type Signature = String;
 pub type Timestamp = u64;
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum OperationType<T> {
     Create(T),
     Update(T),
     Delete,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Operation<ContentId, T> {
     pub id: OperationId,
     pub target: ContentId,
     pub kind: OperationType<T>,
     pub timestamp: Timestamp,
     pub author: Author,
-    pub signature: Option<Signature>,
 }
 
-impl<ContentId, T> Operation<ContentId, T> 
-where 
+impl<ContentId, T> Operation<ContentId, T>
+where
     ContentId: Clone + Debug + Serialize,
     T: Clone + Debug + Serialize,
 {
@@ -32,12 +32,15 @@ where
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as Timestamp;
-        // todo: generate id
-        let id = 0;
-        Self { id, target, kind, timestamp, author, signature: None }
-    }
-    pub fn verify_signature(&self) -> bool {
-        true
+        // Use UlId to make sorting possible.
+        let id = Ulid::new();
+        Self {
+            id,
+            target,
+            kind,
+            timestamp,
+            author,
+        }
     }
 
     pub fn is_delete(&self) -> bool {
@@ -48,20 +51,23 @@ where
         matches!(self.kind, OperationType::Create(_))
     }
 
+    pub fn is_update(&self) -> bool {
+        matches!(self.kind, OperationType::Update(_))
+    }
+
     pub fn payload(&self) -> Option<&T> {
-        match &self.kind {  
+        match &self.kind {
             OperationType::Create(v) | OperationType::Update(v) => Some(v),
             OperationType::Delete => None,
         }
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[derive(Clone, Debug, PartialEq,Serialize)]
+    #[derive(Clone, Debug, PartialEq, Serialize)]
     struct DummyContentId(String);
 
     #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -73,9 +79,13 @@ mod tests {
         let payload = DummyPayload("test".into());
         let author = "Alice".to_string();
 
-        let op = Operation::new(target.clone(), OperationType::Create(payload.clone()), author.clone());
+        let op = Operation::new(
+            target.clone(),
+            OperationType::Create(payload.clone()),
+            author.clone(),
+        );
 
-        assert_eq!(op.id, 0);
+        assert!(op.id != Ulid::nil());
         assert_eq!(op.target, target);
         assert_eq!(op.kind, OperationType::Create(payload.clone()));
         assert!(op.timestamp > 0);
@@ -91,15 +101,20 @@ mod tests {
         let payload = DummyPayload("updated".into());
         let author = "Alice".to_string();
 
-        let op = Operation::new(target.clone(), OperationType::Update(payload.clone()), author.clone());
+        let op = Operation::new(
+            target.clone(),
+            OperationType::Update(payload.clone()),
+            author.clone(),
+        );
 
-        assert_eq!(op.id, 0);
+        assert!(op.id != Ulid::nil());
         assert_eq!(op.target, target);
         assert_eq!(op.kind, OperationType::Update(payload.clone()));
         assert!(op.timestamp > 0);
         assert_eq!(op.author, author);
         assert_eq!(op.payload(), Some(&payload));
         assert!(!op.is_create());
+        assert!(op.is_update());
         assert!(!op.is_delete());
     }
 
@@ -108,9 +123,13 @@ mod tests {
         let target = DummyContentId("test".into());
         let author = "Alice".to_string();
 
-        let op = Operation::<DummyContentId, DummyPayload>::new(target.clone(), OperationType::Delete, author.clone());
+        let op = Operation::<DummyContentId, DummyPayload>::new(
+            target.clone(),
+            OperationType::Delete,
+            author.clone(),
+        );
 
-        assert_eq!(op.id, 0);
+        assert!(op.id != Ulid::nil());
         assert_eq!(op.target, target);
         assert_eq!(op.kind, OperationType::Delete);
         assert!(op.timestamp > 0);
@@ -119,5 +138,4 @@ mod tests {
         assert!(!op.is_create());
         assert!(op.is_delete());
     }
-
 }
