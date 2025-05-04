@@ -27,7 +27,7 @@ pub enum OperationType<T> {
     Delete,
 }
 
- /// Helper methods to check the operation type
+/// Helper methods to check the operation type
 impl<T> OperationType<T> {
     pub fn as_kind(&self) -> OperationKind {
         match self {
