@@ -7,6 +7,14 @@ pub type OperationId = Ulid;
 pub type Author = String;
 pub type Timestamp = u64;
 
+/// Enum representing the abstract kind of operation without payload
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OperationKind {
+    Create,
+    Update,
+    Delete,
+}
+
 /// Enum representing the type of operation
 ///
 /// Create: Create a new content
@@ -17,6 +25,17 @@ pub enum OperationType<T> {
     Create(T),
     Update(T),
     Delete,
+}
+
+ /// Helper methods to check the operation type
+impl<T> OperationType<T> {
+    pub fn as_kind(&self) -> OperationKind {
+        match self {
+            OperationType::Create(_) => OperationKind::Create,
+            OperationType::Update(_) => OperationKind::Update,
+            OperationType::Delete => OperationKind::Delete,
+        }
+    }
 }
 
 /// Structure representing a CRDT operation
@@ -68,24 +87,9 @@ where
         }
     }
 
-    /// Helper methods to check the operation type
-    ///
-    /// The following methods provide a convenient way to check what type of operation this is.
-    /// Instead of directly pattern matching on the `kind` field, you can use these helper methods.
-    ///
-    /// Checks if this operation is a delete operation
-    pub fn is_delete(&self) -> bool {
-        matches!(self.kind, OperationType::Delete)
-    }
-
-    /// Checks if this operation is a create operation
-    pub fn is_create(&self) -> bool {
-        matches!(self.kind, OperationType::Create(_))
-    }
-
-    /// Checks if this operation is an update operation
-    pub fn is_update(&self) -> bool {
-        matches!(self.kind, OperationType::Update(_))
+    /// Checks if this operation is of the given kind
+    pub fn is_type(&self, kind: OperationKind) -> bool {
+        self.kind.as_kind() == kind
     }
 
     /// Gets the payload of the operation
@@ -132,8 +136,9 @@ mod tests {
         assert!(op.timestamp > 0);
         assert_eq!(op.author, author);
         assert_eq!(op.payload(), Some(&payload));
-        assert!(op.is_create());
-        assert!(!op.is_delete());
+        assert!(op.is_type(OperationKind::Create));
+        assert!(!op.is_type(OperationKind::Update));
+        assert!(!op.is_type(OperationKind::Delete));
     }
 
     #[test]
@@ -154,9 +159,9 @@ mod tests {
         assert!(op.timestamp > 0);
         assert_eq!(op.author, author);
         assert_eq!(op.payload(), Some(&payload));
-        assert!(!op.is_create());
-        assert!(op.is_update());
-        assert!(!op.is_delete());
+        assert!(op.is_type(OperationKind::Update));
+        assert!(!op.is_type(OperationKind::Create));
+        assert!(!op.is_type(OperationKind::Delete));
     }
 
     #[test]
@@ -176,7 +181,7 @@ mod tests {
         assert!(op.timestamp > 0);
         assert_eq!(op.author, author);
         assert_eq!(op.payload(), None);
-        assert!(!op.is_create());
-        assert!(op.is_delete());
+        assert!(!op.is_type(OperationKind::Create));
+        assert!(op.is_type(OperationKind::Delete));
     }
 }
