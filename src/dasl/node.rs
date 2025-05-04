@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 const SHA2_256_CODE: u64 = 0x12;
 const RAW_CODE: u64 = 0x55;
 
-/// A generic entry structure that represents a node in a directed acyclic graph (DAG).
 /// This structure can store any type of payload data and metadata, making it versatile for various use cases.
 ///
 /// # Type Parameters
@@ -19,24 +18,24 @@ const RAW_CODE: u64 = 0x55;
 ///
 /// # Fields
 /// * `payload` - The main content/data of the entry.
-/// * `parents` - A vector of content ids (Content Identifiers) pointing to parent entries, forming a DAG structure.
+/// * `parents` - A vector of content ids (Content Identifiers) pointing to parent entries.
 /// * `timestamp` - Unix timestamp representing when the entry was created.
 /// * `metadata` - Additional information about the entry (e.g., author, tags, or other attributes).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "P: Serialize + for<'a> Deserialize<'a>, M: Serialize + for<'a> Deserialize<'a>")]
-pub struct DagNode<P, M = BTreeMap<String, String>> {
+pub struct Node<P, M = BTreeMap<String, String>> {
     pub payload: P,
     pub parents: Vec<Cid>,
     pub timestamp: u64,
     pub metadata: M,
 }
 
-impl<P, M> DagNode<P, M>
+impl<P, M> Node<P, M>
 where
     P: Serialize + DeserializeOwned,
     M: Serialize + DeserializeOwned,
 {
-    /// Creates a new DagNode with the given parameters
+    /// Creates a new Node with the given parameters
     ///
     /// # Arguments
     /// * `payload` - The main content/data to store in the node
@@ -45,9 +44,9 @@ where
     /// * `metadata` - Additional information about the node
     ///
     /// # Returns
-    /// A new DagNode instance
+    /// A new Node instance
     pub fn new(payload: P, parents: Vec<Cid>, timestamp: u64, metadata: M) -> Self {
-        DagNode {
+        Node {
             payload,
             parents,
             timestamp,
@@ -61,7 +60,7 @@ where
     /// Content id (Cid) for the node
     ///
     /// # Errors
-    /// Returns a DagNodeError if serialization or hashing fails
+    /// Returns a NodeError if serialization or hashing fails
     pub fn content_id(&self) -> Cid {
         let buf = self.to_bytes();
         let mh = Multihash::<64>::wrap(SHA2_256_CODE, &buf).unwrap();
@@ -74,21 +73,21 @@ where
     /// Serialized bytes of the node
     ///
     /// # Errors
-    /// Returns a DagNodeError if serialization fails
+    /// Returns a NodeError if serialization fails
     pub fn to_bytes(&self) -> Vec<u8> {
         serde_cbor::to_vec(self).unwrap()
     }
 
-    /// Deserializes a DagNode from bytes
+    /// Deserializes a Node from bytes
     ///
     /// # Arguments
     /// * `buf` - Byte slice containing the serialized node
     ///
     /// # Returns
-    /// Deserialized DagNode
+    /// Deserialized Node
     ///
     /// # Errors
-    /// Returns a DagNodeError if deserialization fails
+    /// Returns a NodeError if deserialization fails
     pub fn from_bytes(buf: &[u8]) -> Self {
         serde_cbor::from_slice(buf).unwrap()
     }
@@ -147,7 +146,7 @@ mod tests {
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node = DagNode::new(payload.clone(), parents, timestamp, metadata);
+        let node = Node::new(payload.clone(), parents, timestamp, metadata);
 
         assert_eq!(node.payload(), &payload);
         assert_eq!(node.parents(), &vec![parents_content_id]);
@@ -163,7 +162,7 @@ mod tests {
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node = DagNode::new(payload.clone(), parents, timestamp, metadata);
+        let node = Node::new(payload.clone(), parents, timestamp, metadata);
 
         assert_eq!(node.parents().len(), 2);
         assert_eq!(node.parents()[0], parents_content_id1);
@@ -178,7 +177,7 @@ mod tests {
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node = DagNode::new(
+        let node = Node::new(
             payload.clone(),
             parents.clone(),
             timestamp,
@@ -186,7 +185,7 @@ mod tests {
         );
 
         let bytes = node.to_bytes();
-        let node2: DagNode<String, BTreeMap<String, String>> = DagNode::from_bytes(&bytes);
+        let node2: Node<String, BTreeMap<String, String>> = Node::from_bytes(&bytes);
 
         assert_eq!(node2.payload(), &payload);
         assert_eq!(node2.parents(), &parents);
@@ -202,14 +201,14 @@ mod tests {
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node1 = DagNode::new(
+        let node1 = Node::new(
             payload.clone(),
             parents.clone(),
             timestamp,
             metadata.clone(),
         );
 
-        let node2 = DagNode::new(
+        let node2 = Node::new(
             payload.clone(),
             parents.clone(),
             timestamp,
@@ -230,7 +229,7 @@ mod tests {
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node = DagNode::new(
+        let node = Node::new(
             payload.clone(),
             parents.clone(),
             timestamp,
@@ -249,7 +248,7 @@ mod tests {
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node = DagNode::new(
+        let node = Node::new(
             payload.clone(),
             parents.clone(),
             timestamp,
@@ -257,7 +256,7 @@ mod tests {
         );
 
         let different_payload = "different".to_string();
-        let different_node = DagNode::new(
+        let different_node = Node::new(
             different_payload,
             parents.clone(),
             timestamp,
@@ -276,7 +275,7 @@ mod tests {
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let mut node = DagNode::new(
+        let mut node = Node::new(
             payload.clone(),
             initial_parents.clone(),
             timestamp,
@@ -301,7 +300,7 @@ mod tests {
         let timestamp = 1;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let mut node = DagNode::new(
+        let mut node = Node::new(
             payload.clone(),
             initial_parents.clone(),
             timestamp,
@@ -327,7 +326,7 @@ mod tests {
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let mut node = DagNode::new(
+        let mut node = Node::new(
             payload.clone(),
             initial_parents.clone(),
             timestamp,
