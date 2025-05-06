@@ -92,34 +92,34 @@ where
     ///
     fn would_create_cycle(&self) -> Result<bool, GraphError> {
         let node_map: HashMap<Cid, Vec<Cid>> = self.storage.get_node_map();
-        
+
         // まず全ての必要な文字列を生成して保存
         let mut cid_to_string: HashMap<Cid, String> = HashMap::new();
-        
+
         // 全てのCidを文字列に変換して保存
         for (child, parents) in &node_map {
             if !cid_to_string.contains_key(child) {
                 cid_to_string.insert(*child, child.to_string());
             }
-            
+
             for parent in parents {
                 if !cid_to_string.contains_key(parent) {
                     cid_to_string.insert(*parent, parent.to_string());
                 }
             }
         }
-        
+
         // 文字列参照を使ってエッジを作成
         let mut edges: Vec<(&str, &str)> = Vec::new();
         for (child, parents) in &node_map {
             let child_str = cid_to_string.get(child).unwrap().as_str();
-            
+
             for parent in parents {
                 let parent_str = cid_to_string.get(parent).unwrap().as_str();
                 edges.push((parent_str, child_str));
             }
         }
-        
+
         println!("{:?}", edges);
         self.detect_cycle(&edges)
     }
@@ -137,11 +137,7 @@ where
     /// * `true` - If a cycle is detected
     /// * `false` - If no cycle is detected
     ///
-    fn detect_cycle(
-        &self,
-        edges: &[(&str, &str)],
-    ) -> Result<bool, GraphError> {
-
+    fn detect_cycle(&self, edges: &[(&str, &str)]) -> Result<bool, GraphError> {
         #[derive(PartialEq)]
         enum State {
             NotVisited,
@@ -150,7 +146,7 @@ where
         }
 
         // edges: &[(Cid<64>, Cid<64>)]
-        
+
         fn build_graph(lines: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
             let mut graph = HashMap::new();
             for (u, v) in lines {
@@ -193,22 +189,21 @@ where
                 state.insert(vertex.clone(), State::NotVisited);
             }
             for vertex in graph.keys() {
-                if state.get(vertex) == Some(&State::NotVisited) {
-                    if dfs(vertex, &graph, &mut state) {
-                        return  true;
-                    }
+                if state.get(vertex) == Some(&State::NotVisited) && dfs(vertex, &graph, &mut state)
+                {
+                    return true;
                 }
             }
             false
         }
 
         let lines = edges;
-        if is_cyclic_graph(&lines) {
+        if is_cyclic_graph(lines) {
             // 巡回グラフ
-            return  Ok(true);
+            Ok(true)
         } else {
             // 非巡回グラフ
-            return  Ok(false);
+            Ok(false)
         }
     }
 }
@@ -312,7 +307,7 @@ mod tests {
             .collect();
         storage.setup_graph(&edges);
         let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
-        
+
         let result = dag.would_create_cycle();
         println!("{:?}", result);
 
