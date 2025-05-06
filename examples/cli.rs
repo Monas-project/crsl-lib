@@ -66,7 +66,15 @@ impl NodeStorage<String, BTreeMap<String, String>> for MockStorage {
     fn delete(&mut self, content_id: &Cid) {
         self.nodes.remove(content_id);
     }
+
+    fn get_node_map(&self) -> HashMap<Cid, Vec<Cid>> {
+        self.nodes
+            .iter()
+            .map(|(cid, node)| (*cid, node.parents().to_vec()))
+            .collect()
+    }
 }
+
 
 fn main() {
     let cli = Cli::parse();
