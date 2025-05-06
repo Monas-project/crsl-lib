@@ -94,7 +94,6 @@ where
     ///
     fn would_create_cycle(&self, parent_cid: &Cid, child_cid: &Cid) -> Result<bool, GraphError> {
         let node_map: HashMap<Cid, Vec<Cid>> = self.storage.get_node_map();
-        println!("node_map: {:?}", node_map);
         self.check_for_cycles(parent_cid, child_cid, &node_map)
     }
 

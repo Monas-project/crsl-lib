@@ -75,7 +75,6 @@ impl NodeStorage<String, BTreeMap<String, String>> for MockStorage {
     }
 }
 
-
 fn main() {
     let cli = Cli::parse();
 
