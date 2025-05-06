@@ -301,10 +301,7 @@ mod tests {
             let cid = create_test_content_id(node_label.as_bytes());
             nodes.push(cid);
         }
-        let edges: Vec<_> = nodes
-            .windows(2)
-            .map(|pair| (pair[0].clone(), pair[1].clone()))
-            .collect();
+        let edges: Vec<_> = nodes.windows(2).map(|pair| (pair[0], pair[1])).collect();
         storage.setup_graph(&edges);
         let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
 
