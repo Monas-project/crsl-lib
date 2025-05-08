@@ -97,7 +97,12 @@ where
     /// * `target` - ID of the content being operated on
     /// * `root_id` - ID of the genesis content
     /// * `kind` - Type of operation and its payload
-    pub fn new_with_genesis(target: ContentId, root_id: ContentId, kind: OperationType<T>, author: Author) -> Self {
+    pub fn new_with_genesis(
+        target: ContentId,
+        root_id: ContentId,
+        kind: OperationType<T>,
+        author: Author,
+    ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -143,7 +148,6 @@ mod tests {
 
     #[derive(Clone, Debug, Serialize, PartialEq)]
     struct DummyPayload(String);
-
 
     #[test]
     fn test_operation_new_create() {

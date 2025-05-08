@@ -1,14 +1,12 @@
-use rusty_leveldb::{LdbIterator, Options, DB as Database};
 use crate::crdt::operation::Operation;
-use ulid::Ulid;
-use std::path::Path;
-use std::marker::PhantomData;
-use std::cell::RefCell;
 use bincode;
+use rusty_leveldb::{LdbIterator, Options, DB as Database};
+use std::cell::RefCell;
+use std::marker::PhantomData;
+use std::path::Path;
+use ulid::Ulid;
 
-
-
-pub trait OperationStorage<ContentId, T>{
+pub trait OperationStorage<ContentId, T> {
     fn save_operation(&self, op: &Operation<ContentId, T>);
     fn load_operations(&self, content_id: &ContentId) -> Vec<Operation<ContentId, T>>;
     fn get_operation(&self, op_id: &Ulid) -> Option<Operation<ContentId, T>>;
@@ -20,9 +18,11 @@ pub struct LeveldbStorage<ContentId, T> {
 }
 
 impl<ContentId, T> LeveldbStorage<ContentId, T> {
-    pub fn open<P: AsRef<Path>>(path: P) -> Self{
-        let mut opts = Options::default();
-        opts.create_if_missing = true;
+    pub fn open<P: AsRef<Path>>(path: P) -> Self {
+        let opts = Options {
+            create_if_missing: true,
+            ..Default::default()
+        };
         let db = Database::open(path, opts).unwrap();
         LeveldbStorage {
             db: RefCell::new(db),
@@ -31,14 +31,14 @@ impl<ContentId, T> LeveldbStorage<ContentId, T> {
     }
 
     fn make_key(id: &Ulid) -> Vec<u8> {
-        let mut key = Vec::with_capacity(1 +16);
+        let mut key = Vec::with_capacity(1 + 16);
         key.push(0x01);
         key.extend_from_slice(id.to_bytes().as_ref());
         key
     }
 }
 
-impl<ContentId, T> OperationStorage<ContentId, T> for LeveldbStorage<ContentId, T> 
+impl<ContentId, T> OperationStorage<ContentId, T> for LeveldbStorage<ContentId, T>
 where
     ContentId: serde::Serialize + for<'de> serde::Deserialize<'de> + PartialEq + std::fmt::Debug,
     T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug,
@@ -59,7 +59,10 @@ where
 
         while iter.valid() {
             iter.current(&mut key, &mut value);
-            if let Ok((op, _)) = bincode::serde::decode_from_slice::<Operation<ContentId, T>, _>(&value, bincode::config::standard()) {
+            if let Ok((op, _)) = bincode::serde::decode_from_slice::<Operation<ContentId, T>, _>(
+                &value,
+                bincode::config::standard(),
+            ) {
                 if op.genesis == *content_id {
                     result.push(op);
                 }
@@ -72,8 +75,14 @@ where
 
     fn get_operation(&self, op_id: &Ulid) -> Option<Operation<ContentId, T>> {
         let key = Self::make_key(op_id);
-        self.db.borrow_mut().get(&key)
-        .and_then(|raw| bincode::serde::decode_from_slice::<Operation<ContentId, T>, _>(&raw, bincode::config::standard()).ok().map(|(op, _)| op))
+        self.db.borrow_mut().get(&key).and_then(|raw| {
+            bincode::serde::decode_from_slice::<Operation<ContentId, T>, _>(
+                &raw,
+                bincode::config::standard(),
+            )
+            .ok()
+            .map(|(op, _)| op)
+        })
     }
 }
 
@@ -81,7 +90,7 @@ where
 mod tests {
     use super::*;
     use crate::crdt::operation::{Operation, OperationType};
-    use serde::{Serialize, Deserialize};
+    use serde::{Deserialize, Serialize};
     use tempfile::tempdir;
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -90,7 +99,10 @@ mod tests {
     #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
     struct DummyPayload(String);
 
-    fn setup_test_storage() -> (LeveldbStorage<DummyContentId, DummyPayload>, tempfile::TempDir) {
+    fn setup_test_storage() -> (
+        LeveldbStorage<DummyContentId, DummyPayload>,
+        tempfile::TempDir,
+    ) {
         let dir = tempdir().unwrap();
         let storage = LeveldbStorage::open(dir.path());
         (storage, dir)
@@ -102,7 +114,11 @@ mod tests {
         let target = DummyContentId("test".into());
         let payload = DummyPayload("test".into());
         let author = "Alice".to_string();
-        let op = Operation::new(target.clone(), OperationType::Create(payload.clone()), author.clone());
+        let op = Operation::new(
+            target.clone(),
+            OperationType::Create(payload.clone()),
+            author.clone(),
+        );
 
         storage.save_operation(&op);
 
@@ -117,7 +133,11 @@ mod tests {
         let target = DummyContentId("test".into());
         let payload = DummyPayload("test".into());
         let author = "Alice".to_string();
-        let op = Operation::new(target.clone(), OperationType::Create(payload.clone()), author.clone());
+        let op = Operation::new(
+            target.clone(),
+            OperationType::Create(payload.clone()),
+            author.clone(),
+        );
         storage.save_operation(&op);
 
         let retrieved_op = storage.get_operation(&op.id);
@@ -132,8 +152,17 @@ mod tests {
         let target = DummyContentId("test".into());
         let payload = DummyPayload("test".into());
         let author = "Alice".to_string();
-        let op1 = Operation::new(target.clone(), OperationType::Create(payload.clone()), author.clone());
-        let op2 = Operation::new_with_genesis(target.clone(), target.clone(), OperationType::Update(payload.clone()), author.clone());
+        let op1 = Operation::new(
+            target.clone(),
+            OperationType::Create(payload.clone()),
+            author.clone(),
+        );
+        let op2 = Operation::new_with_genesis(
+            target.clone(),
+            target.clone(),
+            OperationType::Update(payload.clone()),
+            author.clone(),
+        );
         storage.save_operation(&op1);
         storage.save_operation(&op2);
 
@@ -154,9 +183,23 @@ mod tests {
         let genesis = DummyContentId("genesis".into());
         let payload = DummyPayload("test".into());
         let author = "Alice".to_string();
-        let op1 = Operation::new(target.clone(), OperationType::Create(payload.clone()), author.clone());
-        let op2 = Operation::new_with_genesis(target2.clone(), target.clone(), OperationType::Update(payload.clone()), author.clone());
-        let op3 = Operation::new_with_genesis(genesis.clone(), genesis.clone(), OperationType::Update(payload.clone()), author.clone());
+        let op1 = Operation::new(
+            target.clone(),
+            OperationType::Create(payload.clone()),
+            author.clone(),
+        );
+        let op2 = Operation::new_with_genesis(
+            target2.clone(),
+            target.clone(),
+            OperationType::Update(payload.clone()),
+            author.clone(),
+        );
+        let op3 = Operation::new_with_genesis(
+            genesis.clone(),
+            genesis.clone(),
+            OperationType::Update(payload.clone()),
+            author.clone(),
+        );
         storage.save_operation(&op1);
         storage.save_operation(&op2);
         storage.save_operation(&op3);
@@ -166,5 +209,5 @@ mod tests {
         assert_eq!(retrieved_ops.len(), 2);
         assert!(retrieved_ops.contains(&op1));
         assert!(retrieved_ops.contains(&op2));
-    }    
+    }
 }
