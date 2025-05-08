@@ -51,6 +51,7 @@ impl<T> OperationType<T> {
 pub struct Operation<ContentId, T> {
     pub id: OperationId,
     pub target: ContentId,
+    pub genesis: ContentId,
     pub kind: OperationType<T>,
     pub timestamp: Timestamp,
     pub author: Author,
@@ -72,7 +73,7 @@ where
     /// # Returns
     ///
     /// A newly created operation object
-    pub fn new(target: ContentId, kind: OperationType<T>, author: Author) -> Self {
+    pub fn new(target: ContentId, genesis: ContentId, kind: OperationType<T>, author: Author) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -81,6 +82,7 @@ where
         Self {
             id,
             target,
+            genesis,
             kind,
             timestamp,
             author,
@@ -121,11 +123,13 @@ mod tests {
     #[test]
     fn test_operation_create() {
         let target = DummyContentId("test".into());
+        let genesis = DummyContentId("genesis".into());
         let payload = DummyPayload("test".into());
         let author = "Alice".to_string();
 
         let op = Operation::new(
             target.clone(),
+            genesis.clone(),
             OperationType::Create(payload.clone()),
             author.clone(),
         );
@@ -144,11 +148,13 @@ mod tests {
     #[test]
     fn test_operation_update() {
         let target = DummyContentId("test".into());
+        let genesis = DummyContentId("genesis".into());
         let payload = DummyPayload("updated".into());
         let author = "Alice".to_string();
 
         let op = Operation::new(
             target.clone(),
+            genesis.clone(),
             OperationType::Update(payload.clone()),
             author.clone(),
         );
@@ -167,10 +173,12 @@ mod tests {
     #[test]
     fn test_operation_delete() {
         let target = DummyContentId("test".into());
+        let genesis = DummyContentId("genesis".into());
         let author = "Alice".to_string();
 
         let op = Operation::<DummyContentId, DummyPayload>::new(
             target.clone(),
+            genesis.clone(),
             OperationType::Delete,
             author.clone(),
         );
