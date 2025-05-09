@@ -4,6 +4,8 @@ pub trait Reducer<ContentId, T> {
     fn reduce(ops: &[Operation<ContentId, T>]) -> Option<T>;
 }
 
+/// Last-Write-Wins reducer: picks the operation with the highest timestamp,
+/// breaking ties by ULID order.
 pub struct LwwReducer;
 impl<ContentId, T> Reducer<ContentId, T> for LwwReducer
 where
