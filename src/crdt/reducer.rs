@@ -11,7 +11,11 @@ where
 {
     fn reduce(ops: &[Operation<ContentId, T>]) -> Option<T> {
         ops.iter()
-            .max_by_key(|op| op.timestamp)
+            .max_by(|a, b| {
+                a.timestamp
+                    .cmp(&b.timestamp)
+                    .then(a.id.to_bytes().cmp(&b.id.to_bytes()))
+            })
             .and_then(|op| match &op.kind {
                 OperationType::Create(v) | OperationType::Update(v) => Some(v.clone()),
                 OperationType::Delete => None,
