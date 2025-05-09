@@ -30,6 +30,13 @@ where
     _m_marker: PhantomData<M>,
 }
 
+#[derive(PartialEq)]
+enum VisitState {
+    NotVisited,
+    Visiting,
+    Visited,
+}
+
 impl<S, P, M> DagGraph<S, P, M>
 where
     S: NodeStorage<P, M>,
@@ -93,10 +100,8 @@ where
     fn would_create_cycle(&self) -> Result<bool, GraphError> {
         let node_map: HashMap<Cid, Vec<Cid>> = self.storage.get_node_map();
 
-        // まず全ての必要な文字列を生成して保存
         let mut cid_to_string: HashMap<Cid, String> = HashMap::new();
 
-        // 全てのCidを文字列に変換して保存
         for (child, parents) in &node_map {
             if !cid_to_string.contains_key(child) {
                 cid_to_string.insert(*child, child.to_string());
@@ -109,7 +114,6 @@ where
             }
         }
 
-        // 文字列参照を使ってエッジを作成
         let mut edges: Vec<(&str, &str)> = Vec::new();
         for (child, parents) in &node_map {
             let child_str = cid_to_string.get(child).unwrap().as_str();
@@ -120,91 +124,81 @@ where
             }
         }
 
-        println!("{:?}", edges);
         self.detect_cycle(&edges)
     }
 
     /// Detect a cycle in the graph
+    /// An algorithm that uses DFS(Depth-First search) to detect whether a graph is cyclic or acyclic.
     ///
     /// # Arguments
     ///
-    /// * `current` - The current content Id
-    /// * `target` - The target content Id
-    /// * `visited` - The visited content Ids
+    /// * `edges` - This is relationship between nodes.
     ///
     /// # Returns
     ///
     /// * `true` - If a cycle is detected
     /// * `false` - If no cycle is detected
     ///
-    fn detect_cycle(&self, edges: &[(&str, &str)]) -> Result<bool, GraphError> {
-        #[derive(PartialEq)]
-        enum State {
-            NotVisited,
-            Visiting,
-            Visited,
-        }
-
-        // edges: &[(Cid<64>, Cid<64>)]
-
-        fn build_graph(lines: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
-            let mut graph = HashMap::new();
-            for (u, v) in lines {
-                graph
-                    .entry(u.to_string())
-                    .or_insert_with(Vec::new)
-                    .push(v.to_string());
-                graph.entry(v.to_string()).or_insert_with(Vec::new);
-            }
-            graph
-        }
-
-        fn dfs(
-            vertex: &String,
-            graph: &HashMap<String, Vec<String>>,
-            state: &mut HashMap<String, State>,
-        ) -> bool {
-            state.insert(vertex.clone(), State::Visiting);
-            if let Some(neighbors) = graph.get(vertex) {
-                for neighbor in neighbors {
-                    match state.get(neighbor) {
-                        Some(State::NotVisited) => {
-                            if dfs(neighbor, graph, state) {
-                                return true;
-                            }
-                        }
-                        Some(State::Visiting) => return true,
-                        _ => {}
-                    }
-                }
-            }
-            state.insert(vertex.clone(), State::Visited);
-            false
-        }
-
-        fn is_cyclic_graph(lines: &[(&str, &str)]) -> bool {
-            let graph = build_graph(lines);
-            let mut state = HashMap::new();
-            for vertex in graph.keys() {
-                state.insert(vertex.clone(), State::NotVisited);
-            }
-            for vertex in graph.keys() {
-                if state.get(vertex) == Some(&State::NotVisited) && dfs(vertex, &graph, &mut state)
-                {
-                    return true;
-                }
-            }
-            false
-        }
-
+    pub fn detect_cycle(&self, edges: &[(&str, &str)]) -> Result<bool, GraphError> {
         let lines = edges;
-        if is_cyclic_graph(lines) {
-            // 巡回グラフ
+        if self.is_cyclic_graph(lines) {
+            // cycle_graph
             Ok(true)
         } else {
-            // 非巡回グラフ
+            // acyclic_graph
             Ok(false)
         }
+    }
+
+    fn is_cyclic_graph(&self, lines: &[(&str, &str)]) -> bool {
+        let graph = self.build_graph(lines);
+        let mut state = HashMap::new();
+        for vertex in graph.keys() {
+            state.insert(vertex.clone(), VisitState::NotVisited);
+        }
+        for vertex in graph.keys() {
+            if state.get(vertex) == Some(&VisitState::NotVisited)
+                && Self::dfs(vertex, &graph, &mut state)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn build_graph(&self, lines: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
+        let mut graph = HashMap::new();
+        for (u, v) in lines {
+            graph
+                .entry(u.to_string())
+                .or_insert_with(Vec::new)
+                .push(v.to_string());
+            graph.entry(v.to_string()).or_insert_with(Vec::new);
+        }
+        graph
+    }
+
+    fn dfs(
+        vertex: &String,
+        graph: &HashMap<String, Vec<String>>,
+        state: &mut HashMap<String, VisitState>,
+    ) -> bool {
+        state.insert(vertex.clone(), VisitState::Visiting);
+        if let Some(neighbors) = graph.get(vertex) {
+            for neighbor in neighbors {
+                match state.get(neighbor) {
+                    Some(VisitState::NotVisited) => {
+                        if Self::dfs(neighbor, graph, state) {
+                            return true;
+                        }
+                    }
+                    Some(VisitState::Visiting) => return true,
+                    _ => {}
+                }
+            }
+        }
+        state.insert(vertex.clone(), VisitState::Visited);
+        false
     }
 }
 
@@ -284,7 +278,6 @@ mod tests {
         let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
 
         let result = dag.would_create_cycle();
-        println!("{:?}", result);
 
         assert!(result.is_ok());
         assert!(!result.unwrap(), "false");
@@ -293,7 +286,7 @@ mod tests {
     #[test]
     fn test_large_acyclic_graph() {
         let mut storage = MockStorage::new();
-        // 1000個
+        // 1000 nodes
         let num_nodes = 1000;
         let mut nodes = Vec::with_capacity(num_nodes + 1);
         for i in 0..=num_nodes {
@@ -306,7 +299,6 @@ mod tests {
         let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
 
         let result = dag.would_create_cycle();
-        println!("{:?}", result);
 
         assert!(result.is_ok());
         assert!(!result.unwrap(), "false");
@@ -341,7 +333,6 @@ mod tests {
         let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
 
         let result = dag.would_create_cycle();
-        println!("{:?}", result);
 
         assert!(result.is_ok());
         assert!(!result.unwrap(), "false");
@@ -421,7 +412,6 @@ mod tests {
         let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
 
         let result = dag.would_create_cycle();
-        println!("{:?}", result);
 
         assert!(result.is_ok());
         assert!(result.unwrap(), "true");
