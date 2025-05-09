@@ -5,17 +5,17 @@ pub trait Reducer<ContentId, T> {
 }
 
 pub struct LwwReducer;
-impl<ContentId, T> Reducer<ContentId, T> for LwwReducer 
-where 
+impl<ContentId, T> Reducer<ContentId, T> for LwwReducer
+where
     T: Clone,
 {
     fn reduce(ops: &[Operation<ContentId, T>]) -> Option<T> {
-        ops.iter().max_by_key(|op| op.timestamp).and_then(|op| {
-            match &op.kind {
+        ops.iter()
+            .max_by_key(|op| op.timestamp)
+            .and_then(|op| match &op.kind {
                 OperationType::Create(v) | OperationType::Update(v) => Some(v.clone()),
                 OperationType::Delete => None,
-            }
-        })
+            })
     }
 }
 
@@ -25,14 +25,18 @@ mod tests {
     use crate::crdt::operation::{Operation, OperationType};
     use serde::{Deserialize, Serialize};
     use ulid::Ulid;
-    
+
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct DummyContentId(String);
 
     #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
     struct DummyPayload(String);
 
-    fn make_op(id: u64, ts: u64, kind: OperationType<DummyPayload>) -> Operation<DummyContentId, DummyPayload> {
+    fn make_op(
+        id: u64,
+        ts: u64,
+        kind: OperationType<DummyPayload>,
+    ) -> Operation<DummyContentId, DummyPayload> {
         Operation {
             id: Ulid::new(),
             target: DummyContentId(id.to_string()),
@@ -42,7 +46,6 @@ mod tests {
             author: "test".into(),
         }
     }
-    
 
     #[test]
     fn lww_reducer_picks_latest_update() {
