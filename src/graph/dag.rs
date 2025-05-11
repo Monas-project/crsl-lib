@@ -170,9 +170,9 @@ mod tests {
             ))
         }
 
-        fn put(&mut self, _node: &Node<P, M>) {}
+        fn put(&self, _node: &Node<P, M>) {}
 
-        fn delete(&mut self, _content_id: &Cid) {}
+        fn delete(&self, _content_id: &Cid) {}
     }
 
     fn create_test_content_id(data: &[u8]) -> Cid {

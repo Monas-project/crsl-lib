@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use crsl_lib::dasl::node::Node;
 use crsl_lib::graph::dag::DagGraph;
 use crsl_lib::graph::storage::NodeStorage;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
@@ -35,18 +36,18 @@ enum Commands {
 }
 
 struct MockStorage {
-    nodes: HashMap<Cid, Node<String, BTreeMap<String, String>>>,
+    nodes: RefCell<HashMap<Cid, Node<String, BTreeMap<String, String>>>>,
 }
 
 impl MockStorage {
     fn new() -> Self {
         if let Ok(data) = std::fs::read_to_string("nodes.json") {
             if let Ok(nodes) = serde_json::from_str(&data) {
-                return Self { nodes };
+                return Self { nodes: RefCell::new(nodes) };
             }
         }
         Self {
-            nodes: HashMap::new(),
+            nodes: RefCell::new(HashMap::new()),
         }
     }
 
@@ -56,15 +57,15 @@ impl MockStorage {
 
 impl NodeStorage<String, BTreeMap<String, String>> for MockStorage {
     fn get(&self, content_id: &Cid) -> Option<Node<String, BTreeMap<String, String>>> {
-        self.nodes.get(content_id).cloned()
+        self.nodes.borrow().get(content_id).cloned()
     }
 
-    fn put(&mut self, node: &Node<String, BTreeMap<String, String>>) {
-        self.nodes.insert(node.content_id(), node.clone());
+    fn put(&self, node: &Node<String, BTreeMap<String, String>>) {
+        self.nodes.borrow_mut().insert(node.content_id(), node.clone());
     }
 
-    fn delete(&mut self, content_id: &Cid) {
-        self.nodes.remove(content_id);
+    fn delete(&self, content_id: &Cid) {
+        self.nodes.borrow_mut().remove(content_id);
     }
 }
 
