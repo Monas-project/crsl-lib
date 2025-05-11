@@ -105,9 +105,24 @@ mod tests {
 
     #[test]
     fn lww_reducer_same_timestamp() {
-        let op1 = make_op_with_ulid(1, 100, OperationType::Create(DummyPayload("A".into())), "01GMTWF61FS176A96AKERBFNNX");
-        let op2 = make_op_with_ulid(1, 100, OperationType::Update(DummyPayload("B".into())), "01GMTWF7ANPDQBCMWTKGSQG4QD");
-        let op3 = make_op_with_ulid(1, 100, OperationType::Update(DummyPayload("C".into())), "01GMTWF9TZQ27MEKTAR4VWZCCT");
+        let op1 = make_op_with_ulid(
+            1,
+            100,
+            OperationType::Create(DummyPayload("A".into())),
+            "01GMTWF61FS176A96AKERBFNNX",
+        );
+        let op2 = make_op_with_ulid(
+            1,
+            100,
+            OperationType::Update(DummyPayload("B".into())),
+            "01GMTWF7ANPDQBCMWTKGSQG4QD",
+        );
+        let op3 = make_op_with_ulid(
+            1,
+            100,
+            OperationType::Update(DummyPayload("C".into())),
+            "01GMTWF9TZQ27MEKTAR4VWZCCT",
+        );
         let ops = vec![op1, op2, op3];
 
         let state = LwwReducer::reduce(&ops);
