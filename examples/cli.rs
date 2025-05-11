@@ -7,6 +7,11 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
+// Type aliases to reduce complexity
+type Metadata = BTreeMap<String, String>;
+type NodeType = Node<String, Metadata>;
+type NodeMap = HashMap<Cid, NodeType>;
+
 #[derive(clap::Parser, Clone)]
 struct Cli {
     #[command(subcommand)]
@@ -36,7 +41,7 @@ enum Commands {
 }
 
 struct MockStorage {
-    nodes: RefCell<HashMap<Cid, Node<String, BTreeMap<String, String>>>>,
+    nodes: RefCell<NodeMap>,
 }
 
 impl MockStorage {
@@ -57,12 +62,12 @@ impl MockStorage {
     // currently only in memory
 }
 
-impl NodeStorage<String, BTreeMap<String, String>> for MockStorage {
-    fn get(&self, content_id: &Cid) -> Option<Node<String, BTreeMap<String, String>>> {
+impl NodeStorage<String, Metadata> for MockStorage {
+    fn get(&self, content_id: &Cid) -> Option<NodeType> {
         self.nodes.borrow().get(content_id).cloned()
     }
 
-    fn put(&self, node: &Node<String, BTreeMap<String, String>>) {
+    fn put(&self, node: &NodeType) {
         self.nodes
             .borrow_mut()
             .insert(node.content_id(), node.clone());
@@ -77,7 +82,7 @@ fn main() {
     let cli = Cli::parse();
 
     let storage = MockStorage::new();
-    let mut dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
+    let mut dag = DagGraph::<_, String, Metadata>::new(storage);
 
     match cli.cmd {
         Commands::Init { path } => {
