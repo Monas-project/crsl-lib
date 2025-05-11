@@ -43,7 +43,9 @@ impl MockStorage {
     fn new() -> Self {
         if let Ok(data) = std::fs::read_to_string("nodes.json") {
             if let Ok(nodes) = serde_json::from_str(&data) {
-                return Self { nodes: RefCell::new(nodes) };
+                return Self {
+                    nodes: RefCell::new(nodes),
+                };
             }
         }
         Self {
@@ -61,7 +63,9 @@ impl NodeStorage<String, BTreeMap<String, String>> for MockStorage {
     }
 
     fn put(&self, node: &Node<String, BTreeMap<String, String>>) {
-        self.nodes.borrow_mut().insert(node.content_id(), node.clone());
+        self.nodes
+            .borrow_mut()
+            .insert(node.content_id(), node.clone());
     }
 
     fn delete(&self, content_id: &Cid) {
