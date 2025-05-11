@@ -191,7 +191,7 @@ mod tests {
 
         let result = state.validate_operation(&op);
 
-        assert_eq!(result, false);
+        assert!(!result);
     }
 
     #[test]
