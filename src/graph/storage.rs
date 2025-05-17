@@ -4,6 +4,7 @@ use cid::Cid;
 use rusty_leveldb::{Options, DB as Database};
 use std::cell::RefCell;
 use std::path::Path;
+use std::path::PathBuf;
 
 // todo: error handling
 pub trait NodeStorage<P, M> {
@@ -14,7 +15,23 @@ pub trait NodeStorage<P, M> {
 
 pub struct LeveldbNodeStorage<P, M> {
     db: RefCell<Database>,
+    path: PathBuf,
     _marker: std::marker::PhantomData<(P, M)>,
+}
+
+impl<P, M> Clone for LeveldbNodeStorage<P, M> {
+    fn clone(&self) -> Self {
+        let opts = Options {
+            create_if_missing: true,
+            ..Default::default()
+        };
+        let db = Database::open(&self.path, opts).unwrap();
+        Self {
+            db: RefCell::new(db),
+            path: self.path.clone(),
+            _marker: std::marker::PhantomData,
+        }
+    }
 }
 
 impl<P, M> LeveldbNodeStorage<P, M> {
@@ -23,9 +40,10 @@ impl<P, M> LeveldbNodeStorage<P, M> {
             create_if_missing: true,
             ..Default::default()
         };
-        let db = Database::open(path, opts).unwrap();
+        let db = Database::open(path.as_ref(), opts).unwrap();
         Self {
             db: RefCell::new(db),
+            path: path.as_ref().to_path_buf(),
             _marker: std::marker::PhantomData,
         }
     }
