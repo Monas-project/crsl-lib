@@ -76,6 +76,14 @@ impl NodeStorage<String, Metadata> for MockStorage {
     fn delete(&self, content_id: &Cid) {
         self.nodes.borrow_mut().remove(content_id);
     }
+
+    fn get_node_map(&self) -> HashMap<Cid, Vec<Cid>> {
+        self.nodes
+            .borrow()
+            .iter()
+            .map(|(cid, node)| (*cid, node.parents().to_vec()))
+            .collect()
+    }
 }
 
 fn main() {

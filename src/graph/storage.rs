@@ -1,7 +1,8 @@
 use crate::dasl::node::Node;
 use cid::Cid;
-use rusty_leveldb::{Options, DB as Database};
+use rusty_leveldb::{LdbIterator, Options, DB as Database};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -10,6 +11,7 @@ pub trait NodeStorage<P, M> {
     fn get(&self, content_id: &Cid) -> Option<Node<P, M>>;
     fn put(&self, node: &Node<P, M>);
     fn delete(&self, content_id: &Cid);
+    fn get_node_map(&self) -> HashMap<Cid, Vec<Cid>>;
 }
 
 pub struct LeveldbNodeStorage<P, M> {
@@ -76,6 +78,31 @@ where
     fn delete(&self, cid: &Cid) {
         let key = Self::make_key(cid);
         self.db.borrow_mut().delete(&key).unwrap();
+    }
+
+    // todo: implement get_node_map
+    fn get_node_map(&self) -> HashMap<Cid, Vec<Cid>> {
+        let mut node_map = HashMap::new();
+        let mut iter = self.db.borrow_mut().new_iter().unwrap();
+        iter.seek_to_first();
+        let mut key = Vec::new();
+        let mut value = Vec::new();
+
+        while iter.valid() {
+            iter.current(&mut key, &mut value);
+            if key[0] == 0x10 {
+                // Check if it's a node key
+                if let Ok((node, _)) = bincode::serde::decode_from_slice::<Node<P, M>, _>(
+                    &value,
+                    bincode::config::standard(),
+                ) {
+                    node_map.insert(node.content_id(), node.parents().to_vec());
+                }
+            }
+            iter.advance();
+        }
+
+        node_map
     }
 }
 
