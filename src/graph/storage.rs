@@ -1,5 +1,4 @@
 use crate::dasl::node::Node;
-use bincode;
 use cid::Cid;
 use rusty_leveldb::{Options, DB as Database};
 use std::cell::RefCell;
@@ -61,30 +60,22 @@ where
     M: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone,
 {
     fn get(&self, cid: &Cid) -> Option<Node<P, M>> {
+        let key = Self::make_key(cid);
         self.db
             .borrow_mut()
-            .get(&Self::make_key(cid))
-            .and_then(|raw| {
-                bincode::serde::decode_from_slice::<Node<P, M>, _>(
-                    &raw,
-                    bincode::config::standard(),
-                )
-                .ok()
-                .map(|(node, _)| node)
-            })
+            .get(&key)
+            .map(|raw| Node::from_bytes(&raw))
     }
 
     fn put(&self, node: &Node<P, M>) {
-        if let Ok(val) = bincode::serde::encode_to_vec(node, bincode::config::standard()) {
-            let _ = self
-                .db
-                .borrow_mut()
-                .put(&Self::make_key(&node.content_id()), &val);
-        }
+        let bytes = node.to_bytes();
+        let key = Self::make_key(&node.content_id());
+        self.db.borrow_mut().put(&key, &bytes).unwrap();
     }
 
     fn delete(&self, cid: &Cid) {
-        let _ = self.db.borrow_mut().delete(&Self::make_key(cid));
+        let key = Self::make_key(cid);
+        self.db.borrow_mut().delete(&key).unwrap();
     }
 }
 

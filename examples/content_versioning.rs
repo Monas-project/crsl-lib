@@ -8,15 +8,12 @@
 
 use crsl_lib::{
     crdt::{
+        crdt_state::CrdtState,
         operation::{Operation, OperationType},
         reducer::LwwReducer,
-        crdt_state::CrdtState,
         storage::LeveldbStorage as OpStore,
     },
-    graph::{
-        storage::LeveldbNodeStorage as NodeStorage,
-        dag::{DagGraph},
-    },
+    graph::{dag::DagGraph, storage::LeveldbNodeStorage as NodeStorage},
 };
 use tempfile::tempdir;
 
@@ -25,19 +22,19 @@ type Store = OpStore<String, Content>;
 type ContentState = CrdtState<String, Content, Store, LwwReducer>;
 
 fn main() {
-    let tmp       = tempdir().expect("tmp dir");
-    let op_store  = OpStore::open(tmp.path().join("ops"));
+    let tmp = tempdir().expect("tmp dir");
+    let op_store = OpStore::open(tmp.path().join("ops"));
     let node_store = NodeStorage::open(tmp.path().join("nodes"));
     let state = ContentState::new(op_store);
-    let mut _dag   = DagGraph::<_, Content, ()>::new(node_store);
-    
+    let mut _dag = DagGraph::<_, Content, ()>::new(node_store);
+
     let content_id = "content1".to_string();
     let create_op = Operation::new(
         content_id.clone(),
         OperationType::Create("Initial content".to_string()),
         "user1".to_string(),
     );
-    
+
     // Apply the create operation
     state.apply(create_op);
 
@@ -122,5 +119,4 @@ fn main() {
     // for (i, c) in history.iter().enumerate() {
     //     println!("v{}  {}", i + 1, short(c));
     // }
-    
 }
