@@ -214,6 +214,9 @@ mod tests {
 
         state.apply_with_validation(op2).unwrap();
 
-        assert_eq!(state.get_state(&DummyContentId("1".to_string())), Some(DummyPayload("B".to_string())));
+        assert_eq!(
+            state.get_state(&DummyContentId("1".to_string())),
+            Some(DummyPayload("B".to_string()))
+        );
     }
 }

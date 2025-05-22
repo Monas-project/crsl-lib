@@ -1,3 +1,4 @@
+use crate::crdt::error::Result;
 use crate::{
     crdt::{
         crdt_state::CrdtState,
@@ -10,7 +11,6 @@ use crate::{
 use cid::Cid;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use crate::crdt::error::Result;
 
 pub struct Repo<OpStore, NodeStore, Payload>
 where
