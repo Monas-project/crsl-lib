@@ -23,7 +23,7 @@ type ContentState = CrdtState<String, Content, Store, LwwReducer>;
 
 fn main() {
     let tmp = tempdir().expect("tmp dir");
-    let op_store = OpStore::open(tmp.path().join("ops"));
+    let op_store = OpStore::open(tmp.path().join("ops")).unwrap();
     let node_store = NodeStorage::open(tmp.path().join("nodes"));
     let state = ContentState::new(op_store);
     let mut _dag = DagGraph::<_, Content, ()>::new(node_store);
@@ -36,7 +36,7 @@ fn main() {
     );
 
     // Apply the create operation
-    state.apply(create_op);
+    state.apply(create_op).unwrap();
 
     // ────────────────────────────────────────────────
     // 1. Create  (v1)
@@ -47,7 +47,7 @@ fn main() {
         OperationType::Create("Initial content".into()),
         "user1".into(),
     );
-    state.apply(create_op.clone());
+    state.apply(create_op.clone()).unwrap();
     // todo: implement commit to dag
     // let parent = dag.latest_head(&op.target);
     // dag.add_node(
@@ -66,7 +66,7 @@ fn main() {
         OperationType::Update("Updated content".into()),
         "user1".into(),
     );
-    state.apply(op_v2);
+    state.apply(op_v2).unwrap();
     // todo: implement commit to dag
     // let parent = dag.latest_head(&op.target);
     // dag.add_node(
@@ -84,7 +84,7 @@ fn main() {
         OperationType::Update("Updated content 2".to_string()),
         "user2".to_string(),
     );
-    state.apply(op_v3a);
+    state.apply(op_v3a).unwrap();
     // todo: commit to dag
     // let parent = dag.latest_head(&op.target);
     // dag.add_node(
@@ -102,7 +102,7 @@ fn main() {
         OperationType::Update("Updated content B".into()),
         "userB".into(),
     );
-    state.apply(op_v3b);
+    state.apply(op_v3b).unwrap();
     // todo: commit to dag
     // let parent = dag.latest_head(&op.target);
     // dag.add_node(
