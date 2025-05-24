@@ -1,8 +1,9 @@
+use crate::crdt::error::{CrdtError, Result, ValidationError};
 use crate::crdt::operation::{Operation, OperationType};
 use crate::crdt::reducer::Reducer;
 use crate::crdt::storage::OperationStorage;
+use std::fmt::Debug;
 use std::marker::PhantomData;
-
 /// A generic CRDT state container that manages operations on content.
 ///
 /// `CrdtState` provides a high-level interface for applying operations to content
@@ -27,7 +28,7 @@ where
 
 impl<ContentId, T, S, R> CrdtState<ContentId, T, S, R>
 where
-    ContentId: Clone,
+    ContentId: Clone + Debug,
     T: Clone,
     S: OperationStorage<ContentId, T>,
     R: Reducer<ContentId, T>,
@@ -47,8 +48,8 @@ where
     /// # Parameters
     ///
     /// * `op` - The operation to apply
-    pub fn apply(&self, op: Operation<ContentId, T>) {
-        self.storage.save_operation(&op);
+    pub fn apply(&self, op: Operation<ContentId, T>) -> Result<()> {
+        self.storage.save_operation(&op)
     }
 
     /// Applies an operation to the CRDT state with validation.
@@ -62,13 +63,17 @@ where
     /// # Parameters
     ///
     /// * `op` - The operation to validate and potentially apply
-    pub fn apply_with_validation(&self, op: Operation<ContentId, T>) {
-        if self.validate_operation(&op) {
-            self.apply(op);
+    pub fn apply_with_validation(&self, op: Operation<ContentId, T>) -> Result<()> {
+        if self.validate_operation(&op)? {
+            self.apply(op)
+        } else {
+            Err(CrdtError::Validation(ValidationError::MissingCreate(
+                format!("No create operation found for target: {:?}", op.target),
+            )))
         }
     }
     pub fn get_state(&self, content_id: &ContentId) -> Option<T> {
-        let ops = self.storage.load_operations(content_id);
+        let ops = self.storage.load_operations(content_id).ok()?;
         R::reduce(&ops)
     }
 
@@ -86,20 +91,16 @@ where
     ///
     /// * `true` - If the operation is valid to apply
     /// * `false` - If the operation would violate logical constraints
-    pub fn validate_operation(&self, op: &Operation<ContentId, T>) -> bool {
+    pub fn validate_operation(&self, op: &Operation<ContentId, T>) -> Result<bool> {
         match &op.kind {
             OperationType::Update(_) | OperationType::Delete => {
-                let ops = self.storage.load_operations(&op.target);
-                if !ops
+                let ops = self.storage.load_operations(&op.target)?;
+                Ok(ops
                     .iter()
-                    .any(|o| matches!(o.kind, OperationType::Create(_)))
-                {
-                    return false;
-                }
+                    .any(|o| matches!(o.kind, OperationType::Create(_))))
             }
-            _ => {}
+            _ => Ok(true),
         }
-        true
     }
 }
 
@@ -135,11 +136,12 @@ mod tests {
     fn test_create_state() {
         let dir = tempfile::tempdir().unwrap();
         let storage =
-            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path());
+            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path())
+                .unwrap();
         let state: CrdtState<DummyContentId, DummyPayload, _, LwwReducer> = CrdtState::new(storage);
         let op = make_op(1, 100, OperationType::Create(DummyPayload("A".to_string())));
 
-        state.apply(op);
+        state.apply(op).unwrap();
 
         assert_eq!(
             state.get_state(&DummyContentId("1".to_string())),
@@ -151,13 +153,14 @@ mod tests {
     fn test_update_state() {
         let dir = tempfile::tempdir().unwrap();
         let storage =
-            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path());
+            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path())
+                .unwrap();
         let state: CrdtState<DummyContentId, DummyPayload, _, LwwReducer> = CrdtState::new(storage);
         let op1 = make_op(1, 100, OperationType::Create(DummyPayload("A".to_string())));
         let op2 = make_op(1, 200, OperationType::Update(DummyPayload("B".to_string())));
 
-        state.apply(op1);
-        state.apply(op2);
+        state.apply(op1).unwrap();
+        state.apply(op2).unwrap();
 
         assert_eq!(
             state.get_state(&DummyContentId("1".to_string())),
@@ -169,15 +172,16 @@ mod tests {
     fn test_delete_state() {
         let dir = tempfile::tempdir().unwrap();
         let storage =
-            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path());
+            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path())
+                .unwrap();
         let state: CrdtState<DummyContentId, DummyPayload, _, LwwReducer> = CrdtState::new(storage);
         let op1 = make_op(1, 100, OperationType::Create(DummyPayload("A".to_string())));
         let op2 = make_op(1, 200, OperationType::Update(DummyPayload("B".to_string())));
         let op3 = make_op(1, 300, OperationType::Delete);
 
-        state.apply(op1);
-        state.apply(op2);
-        state.apply(op3);
+        state.apply(op1).unwrap();
+        state.apply(op2).unwrap();
+        state.apply(op3).unwrap();
         assert_eq!(state.get_state(&DummyContentId("1".to_string())), None);
     }
 
@@ -185,25 +189,34 @@ mod tests {
     fn test_validate_operation() {
         let dir = tempfile::tempdir().unwrap();
         let storage =
-            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path());
+            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path())
+                .unwrap();
         let state: CrdtState<DummyContentId, DummyPayload, _, LwwReducer> = CrdtState::new(storage);
-        let op = make_op(1, 100, OperationType::Update(DummyPayload("A".to_string())));
+        let op1 = make_op(1, 100, OperationType::Create(DummyPayload("A".to_string())));
+        let op2 = make_op(1, 200, OperationType::Update(DummyPayload("B".to_string())));
+        state.apply(op1).unwrap();
 
-        let result = state.validate_operation(&op);
+        let result = state.validate_operation(&op2).unwrap();
 
-        assert!(!result);
+        assert!(result);
     }
 
     #[test]
     fn test_apply_with_validation() {
         let dir = tempfile::tempdir().unwrap();
         let storage =
-            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path());
+            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path())
+                .unwrap();
         let state: CrdtState<DummyContentId, DummyPayload, _, LwwReducer> = CrdtState::new(storage);
-        let op = make_op(1, 100, OperationType::Update(DummyPayload("A".to_string())));
+        let op1 = make_op(1, 100, OperationType::Create(DummyPayload("A".to_string())));
+        let op2 = make_op(1, 200, OperationType::Update(DummyPayload("B".to_string())));
+        state.apply(op1).unwrap();
 
-        state.apply_with_validation(op);
+        state.apply_with_validation(op2).unwrap();
 
-        assert_eq!(state.get_state(&DummyContentId("1".to_string())), None);
+        assert_eq!(
+            state.get_state(&DummyContentId("1".to_string())),
+            Some(DummyPayload("B".to_string()))
+        );
     }
 }

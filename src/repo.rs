@@ -1,3 +1,4 @@
+use crate::crdt::error::Result;
 use crate::{
     crdt::{
         crdt_state::CrdtState,
@@ -34,8 +35,8 @@ where
         Self { state, dag }
     }
 
-    pub fn commit_operation(&mut self, op: Operation<Cid, Payload>) -> Cid {
-        self.state.apply(op.clone());
+    pub fn commit_operation(&mut self, op: Operation<Cid, Payload>) -> Result<Cid> {
+        self.state.apply(op.clone())?;
         let parents = self
             .dag
             .latest_head(&op.target)
@@ -61,7 +62,7 @@ where
         };
 
         self.dag.set_head(&op.target, cid);
-        cid
+        Ok(cid)
     }
 
     pub fn latest(&self, target: &Cid) -> Option<Cid> {
@@ -88,7 +89,7 @@ mod tests {
 
     fn setup_test_repo() -> (TestRepo, tempfile::TempDir) {
         let dir = tempdir().unwrap();
-        let op_storage = LeveldbStorage::open(dir.path().join("ops"));
+        let op_storage = LeveldbStorage::open(dir.path().join("ops")).unwrap();
         let node_storage = LeveldbNodeStorage::open(dir.path().join("nodes"));
         let state = CrdtState::new(op_storage);
         let dag = DagGraph::new(node_storage);
@@ -140,7 +141,7 @@ mod tests {
         let payload = TestPayload("test content".to_string());
         let op = make_test_operation(target, OperationType::Create(payload.clone()));
 
-        let cid = repo.commit_operation(op);
+        let cid = repo.commit_operation(op).unwrap();
 
         assert!(repo.latest(&target).is_some());
         assert_eq!(repo.latest(&target).unwrap(), cid);
@@ -209,13 +210,13 @@ mod tests {
             target1,
             OperationType::Create(TestPayload("target1".to_string())),
         );
-        let create1_cid = repo.commit_operation(create1_op);
+        let create1_cid = repo.commit_operation(create1_op).unwrap();
 
         let create2_op = make_test_operation(
             target2,
             OperationType::Create(TestPayload("target2".to_string())),
         );
-        let create2_cid = repo.commit_operation(create2_op);
+        let create2_cid = repo.commit_operation(create2_op).unwrap();
 
         assert!(repo.latest(&target1).is_some());
         assert!(repo.latest(&target2).is_some());
