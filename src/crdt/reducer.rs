@@ -78,7 +78,6 @@ mod tests {
         let ops = vec![op1, op2.clone(), op3];
 
         let state = LwwReducer::reduce(&ops);
-        println!("state: {:?}", state);
 
         assert_eq!(state, Some(DummyPayload("B".into())));
     }

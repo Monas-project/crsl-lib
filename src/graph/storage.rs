@@ -1,10 +1,11 @@
 use crate::dasl::node::Node;
-use bincode;
 use cid::Cid;
 use rusty_leveldb::{LdbIterator, Options, DB as Database};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
+
 // todo: error handling
 pub trait NodeStorage<P, M> {
     fn get(&self, content_id: &Cid) -> Option<Node<P, M>>;
@@ -15,7 +16,23 @@ pub trait NodeStorage<P, M> {
 
 pub struct LeveldbNodeStorage<P, M> {
     db: RefCell<Database>,
+    path: PathBuf,
     _marker: std::marker::PhantomData<(P, M)>,
+}
+
+impl<P, M> Clone for LeveldbNodeStorage<P, M> {
+    fn clone(&self) -> Self {
+        let opts = Options {
+            create_if_missing: true,
+            ..Default::default()
+        };
+        let db = Database::open(&self.path, opts).unwrap();
+        Self {
+            db: RefCell::new(db),
+            path: self.path.clone(),
+            _marker: std::marker::PhantomData,
+        }
+    }
 }
 
 impl<P, M> LeveldbNodeStorage<P, M> {
@@ -24,9 +41,10 @@ impl<P, M> LeveldbNodeStorage<P, M> {
             create_if_missing: true,
             ..Default::default()
         };
-        let db = Database::open(path, opts).unwrap();
+        let db = Database::open(path.as_ref(), opts).unwrap();
         Self {
             db: RefCell::new(db),
+            path: path.as_ref().to_path_buf(),
             _marker: std::marker::PhantomData,
         }
     }
@@ -44,30 +62,22 @@ where
     M: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone,
 {
     fn get(&self, cid: &Cid) -> Option<Node<P, M>> {
+        let key = Self::make_key(cid);
         self.db
             .borrow_mut()
-            .get(&Self::make_key(cid))
-            .and_then(|raw| {
-                bincode::serde::decode_from_slice::<Node<P, M>, _>(
-                    &raw,
-                    bincode::config::standard(),
-                )
-                .ok()
-                .map(|(node, _)| node)
-            })
+            .get(&key)
+            .map(|raw| Node::from_bytes(&raw))
     }
 
     fn put(&self, node: &Node<P, M>) {
-        if let Ok(val) = bincode::serde::encode_to_vec(node, bincode::config::standard()) {
-            let _ = self
-                .db
-                .borrow_mut()
-                .put(&Self::make_key(&node.content_id()), &val);
-        }
+        let bytes = node.to_bytes();
+        let key = Self::make_key(&node.content_id());
+        self.db.borrow_mut().put(&key, &bytes).unwrap();
     }
 
     fn delete(&self, cid: &Cid) {
-        let _ = self.db.borrow_mut().delete(&Self::make_key(cid));
+        let key = Self::make_key(cid);
+        self.db.borrow_mut().delete(&key).unwrap();
     }
 
     // todo: implement get_node_map

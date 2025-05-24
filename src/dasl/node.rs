@@ -75,7 +75,7 @@ where
     /// # Errors
     /// Returns a NodeError if serialization fails
     pub fn to_bytes(&self) -> Vec<u8> {
-        serde_cbor::to_vec(self).unwrap()
+        serde_cbor::to_vec(self).expect("Failed to serialize node")
     }
 
     /// Deserializes a Node from bytes
@@ -89,7 +89,7 @@ where
     /// # Errors
     /// Returns a NodeError if deserialization fails
     pub fn from_bytes(buf: &[u8]) -> Self {
-        serde_cbor::from_slice(buf).unwrap()
+        serde_cbor::from_slice(buf).expect("Failed to deserialize node")
     }
 
     /// Verifies the integrity of the node by comparing the calculated content id with the expected content id
