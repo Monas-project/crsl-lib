@@ -139,7 +139,10 @@ mod tests {
         assert!(retrieved_node.is_some());
 
         let retrieved_node = retrieved_node.unwrap();
-        assert_eq!(retrieved_node.content_id().unwrap(), node.content_id().unwrap());
+        assert_eq!(
+            retrieved_node.content_id().unwrap(),
+            node.content_id().unwrap()
+        );
         assert_eq!(retrieved_node.payload(), node.payload());
         assert_eq!(retrieved_node.metadata(), node.metadata());
     }

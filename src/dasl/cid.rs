@@ -1,8 +1,8 @@
+use super::error::{DaslError, Result};
 use cid::Cid;
 use multibase::Base;
 use multihash::Multihash;
 use std::fmt;
-use super::error::{DaslError, Result};
 
 /// For more details on these multicodec codes, see:
 /// https://github.com/multiformats/multicodec/blob/master/table.csv

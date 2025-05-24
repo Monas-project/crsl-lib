@@ -1,7 +1,7 @@
-use thiserror::Error;
 use cid::Error as CidError;
 use multibase::Error as MultibaseError;
 use multihash::Error as MultihashError;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum DaslError {

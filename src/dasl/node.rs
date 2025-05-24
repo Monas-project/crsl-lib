@@ -1,9 +1,9 @@
+use super::error::{DaslError, NodeValidationError, Result};
 use cid::Cid;
 use multihash::Multihash;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use sha2::{Digest, Sha256};
-use super::error::{DaslError, NodeValidationError, Result};
+use std::collections::BTreeMap;
 
 /// For more details on these multicodec codes, see:
 /// https://github.com/multiformats/multicodec/blob/master/table.csv
@@ -92,7 +92,7 @@ where
     /// Returns a NodeError if deserialization fails
     pub fn from_bytes(buf: &[u8]) -> Result<Self> {
         serde_cbor::from_slice(buf).map_err(|e| DaslError::Deserialization {
-            message: format!("Failed to deserialize node: {}", e),
+            message: format!("Failed to deserialize node: {e}"),
         })
     }
 
@@ -107,20 +107,19 @@ where
         let recalculated = self.content_id()?;
         Ok(recalculated == *expected_content_id)
     }
-    
 
     pub fn add_parent(&mut self, cid: Cid) -> Result<()> {
         let self_cid = self.content_id()?;
         if cid == self_cid {
             return Err(DaslError::NodeValidation(
-                NodeValidationError::CircularReference
+                NodeValidationError::CircularReference,
             ));
         }
 
         // Check for duplicate
         if self.parents.contains(&cid) {
             return Err(DaslError::NodeValidation(
-                NodeValidationError::InvalidParent(format!("Parent CID already exists: {}", cid))
+                NodeValidationError::InvalidParent(format!("Parent CID already exists: {cid}")),
             ));
         }
 
@@ -145,8 +144,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
 
     fn create_test_content_id(data: &[u8]) -> Cid {
         let hash = Sha256::digest(data);

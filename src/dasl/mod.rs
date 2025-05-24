@@ -1,3 +1,3 @@
 pub mod cid;
-pub mod node;
 pub mod error;
+pub mod node;
