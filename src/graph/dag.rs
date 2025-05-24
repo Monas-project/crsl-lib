@@ -160,9 +160,9 @@ mod tests {
             ))
         }
 
-        fn put(&mut self, _node: &Node<P, M>) {}
+        fn put(&self, _node: &Node<P, M>) {}
 
-        fn delete(&mut self, _content_id: &Cid) {}
+        fn delete(&self, _content_id: &Cid) {}
 
         fn get_node_map(&self) -> HashMap<Cid, Vec<Cid>> {
             self.edges.clone()

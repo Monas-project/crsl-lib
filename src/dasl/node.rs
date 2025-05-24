@@ -21,7 +21,7 @@ const RAW_CODE: u64 = 0x55;
 /// * `parents` - A vector of content ids (Content Identifiers) pointing to parent entries.
 /// * `timestamp` - Unix timestamp representing when the entry was created.
 /// * `metadata` - Additional information about the entry (e.g., author, tags, or other attributes).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(bound = "P: Serialize + for<'a> Deserialize<'a>, M: Serialize + for<'a> Deserialize<'a>")]
 pub struct Node<P, M = BTreeMap<String, String>> {
     pub payload: P,
@@ -132,7 +132,6 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn create_test_content_id(data: &[u8]) -> Cid {
-        use multihash::Multihash;
         let code = 0x12;
         let digest = Multihash::<64>::wrap(code, data).unwrap();
         Cid::new_v1(0x55, digest)
