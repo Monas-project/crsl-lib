@@ -1,7 +1,8 @@
+use super::error::{DaslError, NodeValidationError, Result};
 use cid::Cid;
 use multihash::Multihash;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 /// For more details on these multicodec codes, see:
@@ -32,8 +33,8 @@ pub struct Node<P, M = BTreeMap<String, String>> {
 
 impl<P, M> Node<P, M>
 where
-    P: Serialize + DeserializeOwned,
-    M: Serialize + DeserializeOwned,
+    P: Serialize + for<'a> Deserialize<'a>,
+    M: Serialize + for<'a> Deserialize<'a>,
 {
     /// Creates a new Node with the given parameters
     ///
@@ -61,10 +62,11 @@ where
     ///
     /// # Errors
     /// Returns a NodeError if serialization or hashing fails
-    pub fn content_id(&self) -> Cid {
-        let buf = self.to_bytes();
-        let mh = Multihash::<64>::wrap(SHA2_256_CODE, &buf).unwrap();
-        Cid::new_v1(RAW_CODE, mh)
+    pub fn content_id(&self) -> Result<Cid> {
+        let buf = self.to_bytes()?;
+        let hash = Sha256::digest(&buf);
+        let mh = Multihash::<64>::wrap(SHA2_256_CODE, &hash)?;
+        Ok(Cid::new_v1(RAW_CODE, mh))
     }
 
     /// Serializes this node using CBOR
@@ -74,8 +76,8 @@ where
     ///
     /// # Errors
     /// Returns a NodeError if serialization fails
-    pub fn to_bytes(&self) -> Vec<u8> {
-        serde_cbor::to_vec(self).expect("Failed to serialize node")
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        serde_cbor::to_vec(self).map_err(DaslError::from)
     }
 
     /// Deserializes a Node from bytes
@@ -88,8 +90,10 @@ where
     ///
     /// # Errors
     /// Returns a NodeError if deserialization fails
-    pub fn from_bytes(buf: &[u8]) -> Self {
-        serde_cbor::from_slice(buf).expect("Failed to deserialize node")
+    pub fn from_bytes(buf: &[u8]) -> Result<Self> {
+        serde_cbor::from_slice(buf).map_err(|e| DaslError::Deserialization {
+            message: format!("Failed to deserialize node: {e}"),
+        })
     }
 
     /// Verifies the integrity of the node by comparing the calculated content id with the expected content id
@@ -99,17 +103,28 @@ where
     ///
     /// # Returns
     /// `true` if the calculated content id matches the expected content id, `false` otherwise
-    pub fn verify_self_integrity(&self, expected_content_id: &Cid) -> bool {
-        let recalculated = {
-            let buf = serde_cbor::to_vec(self).unwrap();
-            let mh = Multihash::<64>::wrap(SHA2_256_CODE, &buf).unwrap();
-            Cid::new_v1(RAW_CODE, mh)
-        };
-        recalculated == *expected_content_id
+    pub fn verify_self_integrity(&self, expected_content_id: &Cid) -> Result<bool> {
+        let recalculated = self.content_id()?;
+        Ok(recalculated == *expected_content_id)
     }
 
-    pub fn add_parent(&mut self, cid: Cid) {
+    pub fn add_parent(&mut self, cid: Cid) -> Result<()> {
+        let self_cid = self.content_id()?;
+        if cid == self_cid {
+            return Err(DaslError::NodeValidation(
+                NodeValidationError::CircularReference,
+            ));
+        }
+
+        // Check for duplicate
+        if self.parents.contains(&cid) {
+            return Err(DaslError::NodeValidation(
+                NodeValidationError::InvalidParent(format!("Parent CID already exists: {cid}")),
+            ));
+        }
+
         self.parents.push(cid);
+        Ok(())
     }
 
     pub fn payload(&self) -> &P {
@@ -129,12 +144,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
 
     fn create_test_content_id(data: &[u8]) -> Cid {
-        let code = 0x12;
-        let digest = Multihash::<64>::wrap(code, data).unwrap();
-        Cid::new_v1(0x55, digest)
+        let hash = Sha256::digest(data);
+        let digest = Multihash::<64>::wrap(SHA2_256_CODE, &hash).unwrap();
+        Cid::new_v1(RAW_CODE, digest)
     }
 
     #[test]
@@ -183,8 +199,8 @@ mod tests {
             metadata.clone(),
         );
 
-        let bytes = node.to_bytes();
-        let node2: Node<String, BTreeMap<String, String>> = Node::from_bytes(&bytes);
+        let bytes = node.to_bytes().unwrap();
+        let node2: Node<String, BTreeMap<String, String>> = Node::from_bytes(&bytes).unwrap();
 
         assert_eq!(node2.payload(), &payload);
         assert_eq!(node2.parents(), &parents);
@@ -214,8 +230,8 @@ mod tests {
             metadata.clone(),
         );
 
-        let content_id1 = node1.content_id();
-        let content_id2 = node2.content_id();
+        let content_id1 = node1.content_id().unwrap();
+        let content_id2 = node2.content_id().unwrap();
 
         assert_eq!(content_id1.to_string(), content_id2.to_string());
     }
@@ -235,8 +251,8 @@ mod tests {
             metadata.clone(),
         );
 
-        let correct_cid = node.content_id();
-        assert!(node.verify_self_integrity(&correct_cid));
+        let correct_cid = node.content_id().unwrap();
+        assert!(node.verify_self_integrity(&correct_cid).unwrap());
     }
 
     #[test]
@@ -261,9 +277,9 @@ mod tests {
             timestamp,
             metadata.clone(),
         );
-        let different_cid = different_node.content_id();
+        let different_cid = different_node.content_id().unwrap();
 
-        assert!(!node.verify_self_integrity(&different_cid));
+        assert!(!node.verify_self_integrity(&different_cid).unwrap());
     }
 
     #[test]
@@ -284,7 +300,7 @@ mod tests {
         assert_eq!(node.parents().len(), 1);
         assert_eq!(node.parents()[0], parent1);
         let parent2 = create_test_content_id(b"parent2");
-        node.add_parent(parent2);
+        node.add_parent(parent2).unwrap();
 
         assert_eq!(node.parents().len(), 2);
         assert_eq!(node.parents()[0], parent1);
@@ -307,12 +323,12 @@ mod tests {
         );
 
         // If the value becomes too large, encoding may not be possible.
-        let initial_cid_string = node.content_id().to_string();
+        let initial_cid_string = node.content_id().unwrap().to_string();
 
         let parent2 = create_test_content_id(b"b");
-        node.add_parent(parent2);
+        node.add_parent(parent2).unwrap();
 
-        let new_cid_string = node.content_id().to_string();
+        let new_cid_string = node.content_id().unwrap().to_string();
 
         assert_ne!(initial_cid_string, new_cid_string);
     }
@@ -335,9 +351,9 @@ mod tests {
         let parent3 = create_test_content_id(b"parent3");
         let parent4 = create_test_content_id(b"parent4");
 
-        node.add_parent(parent2);
-        node.add_parent(parent3);
-        node.add_parent(parent4);
+        node.add_parent(parent2).unwrap();
+        node.add_parent(parent3).unwrap();
+        node.add_parent(parent4).unwrap();
 
         assert_eq!(node.parents().len(), 4);
         assert_eq!(node.parents()[0], parent1);

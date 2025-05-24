@@ -70,7 +70,7 @@ impl NodeStorage<String, Metadata> for MockStorage {
     fn put(&self, node: &NodeType) {
         self.nodes
             .borrow_mut()
-            .insert(node.content_id(), node.clone());
+            .insert(node.content_id().unwrap(), node.clone());
     }
 
     fn delete(&self, content_id: &Cid) {
@@ -125,7 +125,7 @@ fn main() {
         },
         Commands::Verify { cid } => {
             if let Some(node) = dag.storage.get(&cid) {
-                let ok = node.verify_self_integrity(&cid);
+                let ok = node.verify_self_integrity(&cid).unwrap();
                 println!("Integrity {}", if ok { "OK" } else { "FAIL" });
             } else {
                 eprintln!("Node not found: {}", cid);
