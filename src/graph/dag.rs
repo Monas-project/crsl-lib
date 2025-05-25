@@ -1,17 +1,10 @@
 use crate::dasl::node::Node;
+use crate::graph::error::{GraphError, Result};
 use crate::graph::storage::NodeStorage;
 use cid::Cid;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// エラーの種類を表す列挙型
-#[derive(Debug)]
-pub enum GraphError {
-    CycleDetected,
-    NodeNotFound,
-    StorageError,
-}
 
 /// Directed Acyclic Graph(DAG) Structure
 ///
@@ -63,7 +56,7 @@ where
         payload: P,
         parents: Vec<Cid>,
         metadata: M,
-    ) -> Result<Cid, GraphError> {
+    ) -> Result<Cid> {
         let timestamp = Self::current_timestamp()?;
         let node = Node::new(payload, parents.clone(), timestamp, metadata);
         for parent in &parents {
@@ -74,14 +67,14 @@ where
                 return Err(GraphError::CycleDetected);
             }
         }
-        self.storage.put(&node);
+        self.storage.put(&node)?;
         Ok(node.content_id().unwrap())
     }
 
-    fn current_timestamp() -> Result<u64, GraphError> {
+    fn current_timestamp() -> Result<u64> {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| GraphError::StorageError)
+            .map_err(GraphError::Timestamp)
             .map(|d| d.as_secs())
     }
 
@@ -97,8 +90,8 @@ where
     /// * `true` - If a cycle is detected
     /// * `false` - If no cycle is detected
     ///
-    fn would_create_cycle(&self, parent_cid: &Cid, child_cid: &Cid) -> Result<bool, GraphError> {
-        let node_map: HashMap<Cid, Vec<Cid>> = self.storage.get_node_map();
+    fn would_create_cycle(&self, parent_cid: &Cid, child_cid: &Cid) -> Result<bool> {
+        let node_map: HashMap<Cid, Vec<Cid>> = self.storage.get_node_map()?;
         self.check_for_cycles(parent_cid, child_cid, &node_map)
     }
 
@@ -120,7 +113,7 @@ where
         _parent_cid: &Cid,
         _child_cid: &Cid,
         _node_map: &HashMap<Cid, Vec<Cid>>,
-    ) -> Result<bool, GraphError> {
+    ) -> Result<bool> {
         // 実際のサイクル検出アルゴリズムはここに実装予定
         // 今は単にfalseを返す仮実装
         Ok(false)
@@ -164,21 +157,25 @@ mod tests {
         P: Default + serde::Serialize + serde::de::DeserializeOwned,
         M: Default + serde::Serialize + serde::de::DeserializeOwned,
     {
-        fn get(&self, content_id: &Cid) -> Option<Node<P, M>> {
-            Some(Node::new(
+        fn get(&self, content_id: &Cid) -> Result<Option<Node<P, M>>> {
+            Ok(Some(Node::new(
                 P::default(),
                 self.edges.get(content_id).cloned().unwrap_or_default(),
                 0,
                 M::default(),
-            ))
+            )))
         }
 
-        fn put(&self, _node: &Node<P, M>) {}
+        fn put(&self, _node: &Node<P, M>) -> Result<()> {
+            Ok(())
+        }
 
-        fn delete(&self, _content_id: &Cid) {}
+        fn delete(&self, _content_id: &Cid) -> Result<()> {
+            Ok(())
+        }
 
-        fn get_node_map(&self) -> HashMap<Cid, Vec<Cid>> {
-            self.edges.clone()
+        fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
+            Ok(self.edges.clone())
         }
     }
 

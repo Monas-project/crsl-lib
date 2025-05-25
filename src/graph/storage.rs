@@ -1,4 +1,5 @@
 use crate::dasl::node::Node;
+use crate::graph::error::{GraphError, Result};
 use cid::Cid;
 use rusty_leveldb::{LdbIterator, Options, DB as Database};
 use std::cell::RefCell;
@@ -6,12 +7,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 
-// todo: error handling
 pub trait NodeStorage<P, M> {
-    fn get(&self, content_id: &Cid) -> Option<Node<P, M>>;
-    fn put(&self, node: &Node<P, M>);
-    fn delete(&self, content_id: &Cid);
-    fn get_node_map(&self) -> HashMap<Cid, Vec<Cid>>;
+    fn get(&self, content_id: &Cid) -> Result<Option<Node<P, M>>>;
+    fn put(&self, node: &Node<P, M>) -> Result<()>;
+    fn delete(&self, content_id: &Cid) -> Result<()>;
+    fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>>;
 }
 
 pub struct LeveldbNodeStorage<P, M> {
@@ -26,7 +26,7 @@ impl<P, M> Clone for LeveldbNodeStorage<P, M> {
             create_if_missing: true,
             ..Default::default()
         };
-        let db = Database::open(&self.path, opts).unwrap();
+        let db = Database::open(&self.path, opts).expect("Failed to clone database");
         Self {
             db: RefCell::new(db),
             path: self.path.clone(),
@@ -61,48 +61,62 @@ where
     P: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone,
     M: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone,
 {
-    fn get(&self, cid: &Cid) -> Option<Node<P, M>> {
+    fn get(&self, cid: &Cid) -> Result<Option<Node<P, M>>> {
         let key = Self::make_key(cid);
-        self.db
-            .borrow_mut()
-            .get(&key)
-            .map(|raw| Node::from_bytes(&raw).unwrap())
+        match self.db.borrow_mut().get(&key) {
+            Some(raw) => {
+                let node = Node::from_bytes(&raw).map_err(GraphError::Dasl)?;
+                Ok(Some(node))
+            }
+            None => Ok(None),
+        }
     }
 
-    fn put(&self, node: &Node<P, M>) {
-        let bytes = node.to_bytes().unwrap();
-        let key = Self::make_key(&node.content_id().unwrap());
-        self.db.borrow_mut().put(&key, &bytes).unwrap();
+    fn put(&self, node: &Node<P, M>) -> Result<()> {
+        let bytes = node.to_bytes().map_err(GraphError::Dasl)?;
+        let cid = node.content_id().map_err(GraphError::Dasl)?;
+        let key = Self::make_key(&cid);
+        self.db.borrow_mut().put(&key, &bytes).map_err(GraphError::Storage)?;
+        Ok(())
     }
 
-    fn delete(&self, cid: &Cid) {
+    fn delete(&self, cid: &Cid) -> Result<()> {
         let key = Self::make_key(cid);
-        self.db.borrow_mut().delete(&key).unwrap();
+        self.db.borrow_mut().delete(&key).map_err(GraphError::Storage)?;
+        Ok(())
     }
 
-    // todo: implement get_node_map
-    fn get_node_map(&self) -> HashMap<Cid, Vec<Cid>> {
+    fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
         let mut node_map = HashMap::new();
-        let mut iter = self.db.borrow_mut().new_iter().unwrap();
+        let mut iter = self
+            .db
+            .borrow_mut()
+            .new_iter()
+            .map_err(GraphError::Storage)?;
         iter.seek_to_first();
         let mut key = Vec::new();
         let mut value = Vec::new();
 
         while iter.valid() {
             iter.current(&mut key, &mut value);
-            if key[0] == 0x10 {
-                // Check if it's a node key
-                if let Ok((node, _)) = bincode::serde::decode_from_slice::<Node<P, M>, _>(
+            if !key.is_empty() && key[0] == 0x10 {
+                match bincode::serde::decode_from_slice::<Node<P, M>, _>(
                     &value,
                     bincode::config::standard(),
                 ) {
-                    node_map.insert(node.content_id().unwrap(), node.parents().to_vec());
+                    Ok((node, _)) => {
+                        let node_cid = node.content_id().map_err(GraphError::Dasl)?;
+                        node_map.insert(node_cid, node.parents().to_vec());
+                    }
+                    Err(_) => {
+                        // Skip invalid nodes rather than failing entirely
+                        // In production, you might want to log this
+                    }
                 }
             }
             iter.advance();
         }
-
-        node_map
+        Ok(node_map)
     }
 }
 
@@ -134,8 +148,8 @@ mod tests {
         let node = create_test_node("test-payload");
         let cid = node.content_id().unwrap();
 
-        storage.put(&node);
-        let retrieved_node = storage.get(&cid);
+        storage.put(&node).unwrap();
+        let retrieved_node = storage.get(&cid).unwrap();
         assert!(retrieved_node.is_some());
 
         let retrieved_node = retrieved_node.unwrap();
@@ -154,12 +168,12 @@ mod tests {
 
         let node = create_test_node("delete-test");
         let cid = node.content_id().unwrap();
-        storage.put(&node);
-        assert!(storage.get(&cid).is_some());
+        storage.put(&node).unwrap();
+        assert!(storage.get(&cid).unwrap().is_some());
 
-        storage.delete(&cid);
+        storage.delete(&cid).unwrap();
 
-        assert!(storage.get(&cid).is_none());
+        assert!(storage.get(&cid).unwrap().is_none());
     }
 
     #[test]
@@ -170,24 +184,24 @@ mod tests {
         let node2 = create_test_node("payload-2");
         let node3 = create_test_node("payload-3");
 
-        storage.put(&node1);
-        storage.put(&node2);
-        storage.put(&node3);
+        storage.put(&node1).unwrap();
+        storage.put(&node2).unwrap();
+        storage.put(&node3).unwrap();
 
-        assert!(storage.get(&node1.content_id().unwrap()).is_some());
-        assert!(storage.get(&node2.content_id().unwrap()).is_some());
-        assert!(storage.get(&node3.content_id().unwrap()).is_some());
+        assert!(storage.get(&node1.content_id().unwrap()).unwrap().is_some());
+        assert!(storage.get(&node2.content_id().unwrap()).unwrap().is_some());
+        assert!(storage.get(&node3.content_id().unwrap()).unwrap().is_some());
 
         assert_eq!(
-            storage.get(&node1.content_id().unwrap()).unwrap().payload(),
+            storage.get(&node1.content_id().unwrap()).unwrap().unwrap().payload(),
             "payload-1"
         );
         assert_eq!(
-            storage.get(&node2.content_id().unwrap()).unwrap().payload(),
+            storage.get(&node2.content_id().unwrap()).unwrap().unwrap().payload(),
             "payload-2"
         );
         assert_eq!(
-            storage.get(&node3.content_id().unwrap()).unwrap().payload(),
+            storage.get(&node3.content_id().unwrap()).unwrap().unwrap().payload(),
             "payload-3"
         );
     }
@@ -200,6 +214,6 @@ mod tests {
         let node = create_test_node("nonexistent");
         let cid = node.content_id().unwrap();
 
-        assert!(storage.get(&cid).is_none());
+        assert!(storage.get(&cid).unwrap().is_none());
     }
 }
