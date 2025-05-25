@@ -76,13 +76,19 @@ where
         let bytes = node.to_bytes().map_err(GraphError::Dasl)?;
         let cid = node.content_id().map_err(GraphError::Dasl)?;
         let key = Self::make_key(&cid);
-        self.db.borrow_mut().put(&key, &bytes).map_err(GraphError::Storage)?;
+        self.db
+            .borrow_mut()
+            .put(&key, &bytes)
+            .map_err(GraphError::Storage)?;
         Ok(())
     }
 
     fn delete(&self, cid: &Cid) -> Result<()> {
         let key = Self::make_key(cid);
-        self.db.borrow_mut().delete(&key).map_err(GraphError::Storage)?;
+        self.db
+            .borrow_mut()
+            .delete(&key)
+            .map_err(GraphError::Storage)?;
         Ok(())
     }
 
@@ -193,15 +199,27 @@ mod tests {
         assert!(storage.get(&node3.content_id().unwrap()).unwrap().is_some());
 
         assert_eq!(
-            storage.get(&node1.content_id().unwrap()).unwrap().unwrap().payload(),
+            storage
+                .get(&node1.content_id().unwrap())
+                .unwrap()
+                .unwrap()
+                .payload(),
             "payload-1"
         );
         assert_eq!(
-            storage.get(&node2.content_id().unwrap()).unwrap().unwrap().payload(),
+            storage
+                .get(&node2.content_id().unwrap())
+                .unwrap()
+                .unwrap()
+                .payload(),
             "payload-2"
         );
         assert_eq!(
-            storage.get(&node3.content_id().unwrap()).unwrap().unwrap().payload(),
+            storage
+                .get(&node3.content_id().unwrap())
+                .unwrap()
+                .unwrap()
+                .payload(),
             "payload-3"
         );
     }

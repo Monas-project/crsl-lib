@@ -82,11 +82,11 @@ impl NodeStorage<String, Metadata> for MockStorage {
     fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
         let nodes = self.nodes.borrow();
         let mut node_map = HashMap::new();
-        
+
         for (cid, node) in nodes.iter() {
             node_map.insert(*cid, node.parents().to_vec());
         }
-        
+
         Ok(node_map)
     }
 }

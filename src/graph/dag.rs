@@ -51,12 +51,7 @@ where
     ///
     /// * `Cid` - The content Id of the new node
     ///
-    pub fn add_node(
-        &mut self,
-        payload: P,
-        parents: Vec<Cid>,
-        metadata: M,
-    ) -> Result<Cid> {
+    pub fn add_node(&mut self, payload: P, parents: Vec<Cid>, metadata: M) -> Result<Cid> {
         let timestamp = Self::current_timestamp()?;
         let node = Node::new(payload, parents.clone(), timestamp, metadata);
         for parent in &parents {
