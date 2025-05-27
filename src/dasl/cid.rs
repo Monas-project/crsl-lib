@@ -2,7 +2,7 @@ use super::error::{DaslError, Result};
 use cid::Cid;
 use multibase::Base;
 use multihash::Multihash;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::fmt;
 
 /// For more details on these multicodec codes, see:
