@@ -113,23 +113,23 @@ mod tests {
             author: "test".to_string(),
         }
     }
-    // fn make_test_operation_with_genesis(
-    //     target: Cid,
-    //     genesis: Cid,
-    //     kind: OperationType<TestPayload>,
-    // ) -> Operation<Cid, TestPayload> {
-    //     Operation {
-    //         id: Ulid::new(),
-    //         target,
-    //         genesis,
-    //         kind,
-    //         timestamp: std::time::SystemTime::now()
-    //             .duration_since(std::time::UNIX_EPOCH)
-    //             .unwrap()
-    //             .as_millis() as u64,
-    //         author: "test".to_string(),
-    //     }
-    // }
+    fn make_test_operation_with_genesis(
+        target: Cid,
+        genesis: Cid,
+        kind: OperationType<TestPayload>,
+    ) -> Operation<Cid, TestPayload> {
+        Operation {
+            id: Ulid::new(),
+            target,
+            genesis,
+            kind,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+            author: "test".to_string(),
+        }
+    }
 
     #[test]
     fn test_create_operation() {
@@ -147,51 +147,51 @@ mod tests {
         assert_eq!(repo.latest(&target).unwrap(), cid);
     }
 
-    // #[test]
-    // fn test_update_operation() {
-    //     let (mut repo, _) = setup_test_repo();
-    //     let target = Cid::new_v1(
-    //         0x55,
-    //         multihash::Multihash::<64>::wrap(0x12, b"test").unwrap(),
-    //     );
-    //     let create_op = make_test_operation(
-    //         target,
-    //         OperationType::Create(TestPayload("initial".to_string())),
-    //     );
-    //     let create_cid = repo.commit_operation(create_op);
+    #[test]
+    fn test_update_operation() {
+        let (mut repo, _) = setup_test_repo();
+        let target = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"test").unwrap(),
+        );
+        let create_op = make_test_operation(
+            target,
+            OperationType::Create(TestPayload("initial".to_string())),
+        );
+        let create_cid = repo.commit_operation(create_op).unwrap();
 
-    //     let update_op = make_test_operation_with_genesis(
-    //         target,
-    //         create_cid,
-    //         OperationType::Update(TestPayload("updated".to_string())),
-    //     );
-    //     let update_cid = repo.commit_operation(update_op);
+        let update_op = make_test_operation_with_genesis(
+            target,
+            create_cid,
+            OperationType::Update(TestPayload("updated".to_string())),
+        );
+        let update_cid = repo.commit_operation(update_op).unwrap();
 
-    //     assert!(repo.latest(&target).is_some());
-    //     assert_eq!(repo.latest(&target).unwrap(), update_cid);
-    //     assert_ne!(create_cid, update_cid);
-    // }
+        assert!(repo.latest(&target).is_some());
+        assert_eq!(repo.latest(&target).unwrap(), update_cid);
+        assert_ne!(create_cid, update_cid);
+    }
 
-    // #[test]
-    // fn test_delete_operation() {
-    //     let (mut repo, _) = setup_test_repo();
-    //     let target = Cid::new_v1(
-    //         0x55,
-    //         multihash::Multihash::<64>::wrap(0x12, b"test").unwrap(),
-    //     );
-    //     let create_op = make_test_operation(
-    //         target,
-    //         OperationType::Create(TestPayload("initial".to_string())),
-    //     );
-    //     let create_cid = repo.commit_operation(create_op);
+    #[test]
+    fn test_delete_operation() {
+        let (mut repo, _) = setup_test_repo();
+        let target = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"test").unwrap(),
+        );
+        let create_op = make_test_operation(
+            target,
+            OperationType::Create(TestPayload("initial".to_string())),
+        );
+        let create_cid = repo.commit_operation(create_op).unwrap();
 
-    //     let delete_op = make_test_operation_with_genesis(target, create_cid, OperationType::Delete);
-    //     let delete_cid = repo.commit_operation(delete_op);
+        let delete_op = make_test_operation_with_genesis(target, create_cid, OperationType::Delete);
+        let delete_cid = repo.commit_operation(delete_op).unwrap();
 
-    //     assert!(repo.latest(&target).is_some());
-    //     assert_eq!(repo.latest(&target).unwrap(), delete_cid);
-    //     assert_ne!(create_cid, delete_cid);
-    // }
+        assert!(repo.latest(&target).is_some());
+        assert_eq!(repo.latest(&target).unwrap(), delete_cid);
+        assert_ne!(create_cid, delete_cid);
+    }
 
     #[test]
     fn test_multiple_targets() {
