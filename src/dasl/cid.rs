@@ -46,13 +46,13 @@ impl ContentId {
 
     /// Creates a `ContentId` from a custom base-encoded string.
     pub fn from_base(encoded: &str, base: Base) -> Result<Self> {
-        let (decoded_base, decoded_bytes) = multibase::decode(encoded)
-        .map_err(DaslError::Multibase)?;
-    
+        let (decoded_base, decoded_bytes) =
+            multibase::decode(encoded).map_err(DaslError::Multibase)?;
+
         if decoded_base != base {
             return Err(DaslError::BaseEncodingMismatch {
-                expected: format!("{:?}", base),
-                actual: format!("{:?}", decoded_base),
+                expected: format!("{base:?}"),
+                actual: format!("{decoded_base:?}"),
             });
         }
         let cid = Cid::try_from(decoded_bytes.as_slice()).map_err(DaslError::Cid)?;
