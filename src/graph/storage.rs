@@ -65,7 +65,8 @@ where
         let key = Self::make_key(cid);
         match self.db.borrow_mut().get(&key) {
             Some(raw) => {
-                let node = Node::from_bytes(&raw).map_err(|e| GraphError::NodeOperation(e.to_string()))?;
+                let node =
+                    Node::from_bytes(&raw).map_err(|e| GraphError::NodeOperation(e.to_string()))?;
                 Ok(Some(node))
             }
             None => Ok(None),
@@ -73,8 +74,12 @@ where
     }
 
     fn put(&self, node: &Node<P, M>) -> Result<()> {
-        let bytes = node.to_bytes().map_err(|e| GraphError::NodeOperation(e.to_string()))?;
-        let cid = node.content_id().map_err(|e| GraphError::NodeOperation(e.to_string()))?;
+        let bytes = node
+            .to_bytes()
+            .map_err(|e| GraphError::NodeOperation(e.to_string()))?;
+        let cid = node
+            .content_id()
+            .map_err(|e| GraphError::NodeOperation(e.to_string()))?;
         let key = Self::make_key(&cid);
         self.db
             .borrow_mut()
@@ -111,7 +116,9 @@ where
                     bincode::config::standard(),
                 ) {
                     Ok((node, _)) => {
-                        let node_cid = node.content_id().map_err(|e| GraphError::NodeOperation(e.to_string()))?;
+                        let node_cid = node
+                            .content_id()
+                            .map_err(|e| GraphError::NodeOperation(e.to_string()))?;
                         node_map.insert(node_cid, node.parents().to_vec());
                     }
                     Err(e) => {
