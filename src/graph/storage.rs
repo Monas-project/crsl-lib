@@ -66,12 +66,12 @@ where
         self.db
             .borrow_mut()
             .get(&key)
-            .map(|raw| Node::from_bytes(&raw))
+            .map(|raw| Node::from_bytes(&raw).unwrap())
     }
 
     fn put(&self, node: &Node<P, M>) {
-        let bytes = node.to_bytes();
-        let key = Self::make_key(&node.content_id());
+        let bytes = node.to_bytes().unwrap();
+        let key = Self::make_key(&node.content_id().unwrap());
         self.db.borrow_mut().put(&key, &bytes).unwrap();
     }
 
@@ -96,7 +96,7 @@ where
                     &value,
                     bincode::config::standard(),
                 ) {
-                    node_map.insert(node.content_id(), node.parents().to_vec());
+                    node_map.insert(node.content_id().unwrap(), node.parents().to_vec());
                 }
             }
             iter.advance();
@@ -132,14 +132,17 @@ mod tests {
         let storage = LeveldbNodeStorage::<String, String>::open(temp_dir.path());
 
         let node = create_test_node("test-payload");
-        let cid = node.content_id();
+        let cid = node.content_id().unwrap();
 
         storage.put(&node);
         let retrieved_node = storage.get(&cid);
         assert!(retrieved_node.is_some());
 
         let retrieved_node = retrieved_node.unwrap();
-        assert_eq!(retrieved_node.content_id(), node.content_id());
+        assert_eq!(
+            retrieved_node.content_id().unwrap(),
+            node.content_id().unwrap()
+        );
         assert_eq!(retrieved_node.payload(), node.payload());
         assert_eq!(retrieved_node.metadata(), node.metadata());
     }
@@ -150,7 +153,7 @@ mod tests {
         let storage = LeveldbNodeStorage::<String, String>::open(temp_dir.path());
 
         let node = create_test_node("delete-test");
-        let cid = node.content_id();
+        let cid = node.content_id().unwrap();
         storage.put(&node);
         assert!(storage.get(&cid).is_some());
 
@@ -171,20 +174,20 @@ mod tests {
         storage.put(&node2);
         storage.put(&node3);
 
-        assert!(storage.get(&node1.content_id()).is_some());
-        assert!(storage.get(&node2.content_id()).is_some());
-        assert!(storage.get(&node3.content_id()).is_some());
+        assert!(storage.get(&node1.content_id().unwrap()).is_some());
+        assert!(storage.get(&node2.content_id().unwrap()).is_some());
+        assert!(storage.get(&node3.content_id().unwrap()).is_some());
 
         assert_eq!(
-            storage.get(&node1.content_id()).unwrap().payload(),
+            storage.get(&node1.content_id().unwrap()).unwrap().payload(),
             "payload-1"
         );
         assert_eq!(
-            storage.get(&node2.content_id()).unwrap().payload(),
+            storage.get(&node2.content_id().unwrap()).unwrap().payload(),
             "payload-2"
         );
         assert_eq!(
-            storage.get(&node3.content_id()).unwrap().payload(),
+            storage.get(&node3.content_id().unwrap()).unwrap().payload(),
             "payload-3"
         );
     }
@@ -195,7 +198,7 @@ mod tests {
         let storage = LeveldbNodeStorage::<String, String>::open(temp_dir.path());
 
         let node = create_test_node("nonexistent");
-        let cid = node.content_id();
+        let cid = node.content_id().unwrap();
 
         assert!(storage.get(&cid).is_none());
     }

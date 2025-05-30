@@ -67,12 +67,15 @@ where
         let timestamp = Self::current_timestamp()?;
         let node = Node::new(payload, parents.clone(), timestamp, metadata);
         for parent in &parents {
-            if self.would_create_cycle(parent, &node.content_id())? {
+            if self
+                .would_create_cycle(parent, &node.content_id().unwrap())
+                .unwrap()
+            {
                 return Err(GraphError::CycleDetected);
             }
         }
         self.storage.put(&node);
-        Ok(node.content_id())
+        Ok(node.content_id().unwrap())
     }
 
     fn current_timestamp() -> Result<u64, GraphError> {
