@@ -2,6 +2,7 @@ use cid::Cid;
 use clap::{Parser, Subcommand};
 use crsl_lib::dasl::node::Node;
 use crsl_lib::graph::dag::DagGraph;
+use crsl_lib::graph::error::{GraphError, Result};
 use crsl_lib::graph::storage::NodeStorage;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -63,26 +64,32 @@ impl MockStorage {
 }
 
 impl NodeStorage<String, Metadata> for MockStorage {
-    fn get(&self, content_id: &Cid) -> Option<NodeType> {
-        self.nodes.borrow().get(content_id).cloned()
+    fn get(&self, content_id: &Cid) -> Result<Option<NodeType>> {
+        Ok(self.nodes.borrow().get(content_id).cloned())
     }
 
-    fn put(&self, node: &NodeType) {
-        self.nodes
-            .borrow_mut()
-            .insert(node.content_id().unwrap(), node.clone());
+    fn put(&self, node: &NodeType) -> Result<()> {
+        let content_id = node
+            .content_id()
+            .map_err(|e| GraphError::NodeOperation(e.to_string()))?;
+        self.nodes.borrow_mut().insert(content_id, node.clone());
+        Ok(())
     }
 
-    fn delete(&self, content_id: &Cid) {
+    fn delete(&self, content_id: &Cid) -> Result<()> {
         self.nodes.borrow_mut().remove(content_id);
+        Ok(())
     }
 
-    fn get_node_map(&self) -> HashMap<Cid, Vec<Cid>> {
-        self.nodes
-            .borrow()
-            .iter()
-            .map(|(cid, node)| (*cid, node.parents().to_vec()))
-            .collect()
+    fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
+        let nodes = self.nodes.borrow();
+        let mut node_map = HashMap::new();
+
+        for (cid, node) in nodes.iter() {
+            node_map.insert(*cid, node.parents().to_vec());
+        }
+
+        Ok(node_map)
     }
 }
 
@@ -117,14 +124,15 @@ fn main() {
             }
         }
         Commands::Show { cid } => match dag.storage.get(&cid) {
-            Some(node) => {
+            Ok(Some(node)) => {
                 println!("Payload: {:?}", node.payload());
                 println!("Parents: {:?}", node.parents());
             }
-            None => eprintln!("Node not found: {}", cid),
+            Ok(None) => eprintln!("Node not found: {}", cid),
+            Err(err) => eprintln!("Error getting node: {:?}", err),
         },
         Commands::Verify { cid } => {
-            if let Some(node) = dag.storage.get(&cid) {
+            if let Ok(Some(node)) = dag.storage.get(&cid) {
                 let ok = node.verify_self_integrity(&cid).unwrap();
                 println!("Integrity {}", if ok { "OK" } else { "FAIL" });
             } else {
