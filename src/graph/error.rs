@@ -1,4 +1,3 @@
-use crate::dasl::error::DaslError;
 use bincode::error::{DecodeError, EncodeError};
 use rusty_leveldb::Status as LeveldbError;
 use thiserror::Error;
@@ -26,8 +25,8 @@ pub enum GraphError {
     #[error("empty graph operation not allowed")]
     EmptyGraph,
 
-    #[error("dasl error: {0}")]
-    Dasl(#[from] DaslError),
+    #[error("node operation failed: {0}")]
+    NodeOperation(String),
 
     #[error("timestamp error: {0}")]
     Timestamp(#[from] std::time::SystemTimeError),

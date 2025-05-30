@@ -29,9 +29,9 @@ impl ContentId {
     pub fn new(data: &[u8]) -> Result<Self> {
         let mut hasher = Sha256::new();
         hasher.update(data);
-        let digest = hasher.finalize();
+        let hash = hasher.finalize();
         let code = SHA2_256_CODE;
-        let digest = Multihash::<64>::wrap(code, digest.as_slice()).unwrap();
+        let digest = Multihash::<64>::wrap(code, &hash).map_err(DaslError::Multihash)?;
         let cid = Cid::new_v1(RAW_CODE, digest);
         Ok(ContentId(cid))
     }
@@ -50,11 +50,15 @@ impl ContentId {
 
     /// Creates a `ContentId` from a custom base-encoded string.
     pub fn from_base(encoded: &str, base: Base) -> Result<Self> {
-        let (decoded_base, decoded_bytes) = multibase::decode(encoded).unwrap();
-        assert_eq!(
-            decoded_base, base,
-            "Base encoding does not match the expected base"
-        );
+        let (decoded_base, decoded_bytes) =
+            multibase::decode(encoded).map_err(DaslError::Multibase)?;
+
+        if decoded_base != base {
+            return Err(DaslError::BaseEncodingMismatch {
+                expected: format!("{base:?}"),
+                actual: format!("{decoded_base:?}"),
+            });
+        }
         let cid = Cid::try_from(decoded_bytes.as_slice()).map_err(DaslError::Cid)?;
         Ok(ContentId(cid))
     }
