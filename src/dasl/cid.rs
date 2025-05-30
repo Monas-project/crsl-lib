@@ -2,6 +2,7 @@ use super::error::{DaslError, Result};
 use cid::Cid;
 use multibase::Base;
 use multihash::Multihash;
+use sha2::{Digest, Sha256};
 use std::fmt;
 
 /// For more details on these multicodec codes, see:
@@ -26,8 +27,11 @@ impl ContentId {
     ///
     /// A new `ContentId` instance containing the generated CID.
     pub fn new(data: &[u8]) -> Result<Self> {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let hash = hasher.finalize();
         let code = SHA2_256_CODE;
-        let digest = Multihash::<64>::wrap(code, data).map_err(DaslError::Multihash)?;
+        let digest = Multihash::<64>::wrap(code, &hash).map_err(DaslError::Multihash)?;
         let cid = Cid::new_v1(RAW_CODE, digest);
         Ok(ContentId(cid))
     }
@@ -91,6 +95,27 @@ mod tests {
         let data = b"test data";
         let content_id = ContentId::new(data).unwrap();
         assert_eq!(content_id.to_string(), content_id.0.to_string());
+    }
+
+    #[test]
+    fn test_large_data_cid_creation() {
+        let data = vec![0u8; 1024 * 1024];
+        let content_id = ContentId::new(&data).unwrap();
+        assert!(content_id.verify(&data));
+    }
+
+    #[test]
+    fn test_empty_data_cid_creation() {
+        let data = b"";
+        let content_id = ContentId::new(data).unwrap();
+        assert!(content_id.verify(data));
+    }
+
+    #[test]
+    fn test_special_characters_cid_creation() {
+        let data = b"!@#$%^&*()_+{}|:<>?~`-=[]\\;',./";
+        let content_id = ContentId::new(data).unwrap();
+        assert!(content_id.verify(data));
     }
 
     #[test]
