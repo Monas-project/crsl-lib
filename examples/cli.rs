@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             std::fs::write(path.join(".crsl"), "")?;
 
-            println!("Initialized CRSL repository at {:?}", path);
+            println!("Initialized CRSL repository at {path:?}");
         }
         other_command => {
             let repo_path = Path::new("./crsl_data");
@@ -81,8 +81,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let version_cid = repo.commit_operation(op)?;
 
                     println!("Created content:");
-                    println!("  Content ID: {}", cid);
-                    println!("  Version: {}", version_cid);
+                    println!("  Content ID: {cid}");
+                    println!("  Version: {version_cid}");
                 }
                 Commands::Update {
                     genesis_id,
@@ -103,23 +103,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let version_cid = repo.commit_operation(op)?;
 
                     println!("Updated content:");
-                    println!("  Genesis ID: {}", genesis_id);
-                    println!("  Version: {}", version_cid);
+                    println!("  Genesis ID: {genesis_id}");
+                    println!("  Version: {version_cid}");
                 }
                 Commands::Show { content_id } => {
                     let cid = Cid::try_from(content_id.as_str())?;
 
                     match repo.state.get_state(&cid) {
                         Some(content) => {
-                            println!("Content ID: {}", content_id);
-                            println!("Content: {}", content);
+                            println!("Content ID: {content_id}");
+                            println!("Content: {content}");
 
                             if let Some(latest_version) = repo.latest(&cid) {
-                                println!("Latest version: {}", latest_version);
+                                println!("Latest version: {latest_version}");
                             }
                         }
                         None => {
-                            println!("Content not found: {}", content_id);
+                            println!("Content not found: {content_id}");
                         }
                     }
                 }

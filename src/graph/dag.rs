@@ -302,7 +302,7 @@ mod tests {
         dag.set_head(&cid_a, cid_c);
 
         let head = dag.latest_head(&cid_a);
-        println!("head: {:?}", head);
+        println!("head: {head:?}");
 
         assert!(head.is_some());
         assert!(head.unwrap() == cid_c);
