@@ -1,17 +1,15 @@
 use cid::Cid;
 use clap::{Parser, Subcommand};
-use crsl_lib::dasl::node::Node;
-use crsl_lib::graph::dag::DagGraph;
-use crsl_lib::graph::error::{GraphError, Result};
-use crsl_lib::graph::storage::NodeStorage;
-use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
-
-// Type aliases to reduce complexity
-type Metadata = BTreeMap<String, String>;
-type NodeType = Node<String, Metadata>;
-type NodeMap = HashMap<Cid, NodeType>;
+use crsl_lib::crdt::{
+    crdt_state::CrdtState,
+    operation::{Operation, OperationType},
+    storage::LeveldbStorage,
+};
+use crsl_lib::dasl::cid::ContentId;
+use crsl_lib::graph::{dag::DagGraph, storage::LeveldbNodeStorage};
+use crsl_lib::repo::Repo;
+use std::error::Error;
+use std::path::{Path, PathBuf};
 
 #[derive(clap::Parser, Clone)]
 struct Cli {
@@ -22,122 +20,113 @@ struct Cli {
 #[derive(Subcommand, Clone)]
 enum Commands {
     Init {
-        #[arg(short, long)]
-        path: Option<PathBuf>,
+        #[arg(short, long, default_value = "./crsl_data")]
+        path: PathBuf,
     },
-    Add {
-        #[arg(short = 'l', long)]
-        payload: String,
+    Create {
         #[arg(short, long)]
-        parents: Vec<Cid>,
-        #[arg(short, long, value_delimiter = ',')]
-        meta: Vec<String>,
+        content: String,
+        #[arg(short, long)]
+        author: Option<String>,
+    },
+    Update {
+        #[arg(short, long)]
+        genesis_id: String,
+        #[arg(short, long)]
+        content: String,
+        #[arg(short, long)]
+        author: Option<String>,
     },
     Show {
-        cid: Cid,
-    },
-    Verify {
-        cid: Cid,
+        content_id: String,
     },
 }
 
-struct MockStorage {
-    nodes: RefCell<NodeMap>,
-}
-
-impl MockStorage {
-    fn new() -> Self {
-        if let Ok(data) = std::fs::read_to_string("nodes.json") {
-            if let Ok(nodes) = serde_json::from_str(&data) {
-                return Self {
-                    nodes: RefCell::new(nodes),
-                };
-            }
-        }
-        Self {
-            nodes: RefCell::new(HashMap::new()),
-        }
-    }
-
-    // todo: save to persistent storage
-    // currently only in memory
-}
-
-impl NodeStorage<String, Metadata> for MockStorage {
-    fn get(&self, content_id: &Cid) -> Result<Option<NodeType>> {
-        Ok(self.nodes.borrow().get(content_id).cloned())
-    }
-
-    fn put(&self, node: &NodeType) -> Result<()> {
-        let content_id = node
-            .content_id()
-            .map_err(|e| GraphError::NodeOperation(e.to_string()))?;
-        self.nodes.borrow_mut().insert(content_id, node.clone());
-        Ok(())
-    }
-
-    fn delete(&self, content_id: &Cid) -> Result<()> {
-        self.nodes.borrow_mut().remove(content_id);
-        Ok(())
-    }
-
-    fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
-        let nodes = self.nodes.borrow();
-        let mut node_map = HashMap::new();
-
-        for (cid, node) in nodes.iter() {
-            node_map.insert(*cid, node.parents().to_vec());
-        }
-
-        Ok(node_map)
-    }
-}
-
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
-
-    let storage = MockStorage::new();
-    let mut dag = DagGraph::<_, String, Metadata>::new(storage);
 
     match cli.cmd {
         Commands::Init { path } => {
-            println!(
-                "Init at: {:?} (example no-op)",
-                path.unwrap_or_else(|| PathBuf::from("."))
-            );
+            std::fs::create_dir_all(&path)?;
+            std::fs::create_dir_all(path.join("ops"))?;
+            std::fs::create_dir_all(path.join("nodes"))?;
+
+            std::fs::write(path.join(".crsl"), "")?;
+
+            println!("Initialized CRSL repository at {path:?}");
         }
-        Commands::Add {
-            payload,
-            parents,
-            meta,
-        } => {
-            let mut metadata = BTreeMap::new();
-            for pair in meta {
-                if let Some((k, v)) = pair.split_once('=') {
-                    metadata.insert(k.to_string(), v.to_string());
-                }
+        other_command => {
+            let repo_path = Path::new("./crsl_data");
+
+            if !repo_path.join(".crsl").exists() {
+                eprintln!("Repository not found. Run 'init' first.");
+                return Ok(());
             }
 
-            match dag.add_node(payload, parents, metadata) {
-                Ok(cid) => println!("Added node with CID: {cid}"),
-                Err(err) => eprintln!("Error adding node: {err:?}"),
-            }
-        }
-        Commands::Show { cid } => match dag.storage.get(&cid) {
-            Ok(Some(node)) => {
-                println!("Payload: {:?}", node.payload());
-                println!("Parents: {:?}", node.parents());
-            }
-            Ok(None) => eprintln!("Node not found: {cid}"),
-            Err(err) => eprintln!("Error getting node: {err:?}"),
-        },
-        Commands::Verify { cid } => {
-            if let Ok(Some(node)) = dag.storage.get(&cid) {
-                let ok = node.verify_self_integrity(&cid).unwrap();
-                println!("Integrity {}", if ok { "OK" } else { "FAIL" });
-            } else {
-                eprintln!("Node not found: {cid}");
+            let op_storage = LeveldbStorage::open(repo_path.join("ops"))?;
+            let node_storage = LeveldbNodeStorage::open(repo_path.join("nodes"));
+            let state = CrdtState::new(op_storage);
+            let dag = DagGraph::new(node_storage);
+            let mut repo = Repo::new(state, dag);
+
+            match other_command {
+                Commands::Create { content, author } => {
+                    let content_id_result = ContentId::new(content.as_bytes())?;
+                    let cid = content_id_result.0;
+
+                    let author = author.unwrap_or_else(|| "anonymous".to_string());
+
+                    let op = Operation::new(cid, OperationType::Create(content.clone()), author);
+
+                    let version_cid = repo.commit_operation(op)?;
+
+                    println!("Created content:");
+                    println!("  Content ID: {cid}");
+                    println!("  Version: {version_cid}");
+                }
+                Commands::Update {
+                    genesis_id,
+                    content,
+                    author,
+                } => {
+                    let genesis_cid = Cid::try_from(genesis_id.as_str())?;
+
+                    let author = author.unwrap_or_else(|| "anonymous".to_string());
+
+                    let op = Operation::new_with_genesis(
+                        genesis_cid,
+                        genesis_cid,
+                        OperationType::Update(content.clone()),
+                        author,
+                    );
+
+                    let version_cid = repo.commit_operation(op)?;
+
+                    println!("Updated content:");
+                    println!("  Genesis ID: {genesis_id}");
+                    println!("  Version: {version_cid}");
+                }
+                Commands::Show { content_id } => {
+                    let cid = Cid::try_from(content_id.as_str())?;
+
+                    match repo.state.get_state(&cid) {
+                        Some(content) => {
+                            println!("Content ID: {content_id}");
+                            println!("Content: {content}");
+
+                            if let Some(latest_version) = repo.latest(&cid) {
+                                println!("Latest version: {latest_version}");
+                            }
+                        }
+                        None => {
+                            println!("Content not found: {content_id}");
+                        }
+                    }
+                }
+                _ => unreachable!(),
             }
         }
     }
+
+    Ok(())
 }
