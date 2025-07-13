@@ -1,17 +1,10 @@
 use crate::dasl::node::Node;
+use crate::graph::error::{GraphError, Result};
 use crate::graph::storage::NodeStorage;
 use cid::Cid;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// エラーの種類を表す列挙型
-#[derive(Debug)]
-pub enum GraphError {
-    CycleDetected,
-    NodeNotFound,
-    StorageError,
-}
 
 /// Directed Acyclic Graph(DAG) Structure
 ///
@@ -26,6 +19,7 @@ where
     S: NodeStorage<P, M>,
 {
     pub storage: S,
+    pub heads: HashMap<String, Cid>,
     _p_marker: PhantomData<P>,
     _m_marker: PhantomData<M>,
 }
@@ -46,6 +40,7 @@ where
     pub fn new(storage: S) -> Self {
         Self {
             storage,
+            heads: HashMap::new(),
             _p_marker: PhantomData,
             _m_marker: PhantomData,
         }
@@ -63,25 +58,20 @@ where
     ///
     /// * `Cid` - The content Id of the new node
     ///
-    pub fn add_node(
-        &mut self,
-        payload: P,
-        parents: Vec<Cid>,
-        metadata: M,
-    ) -> Result<Cid, GraphError> {
+    pub fn add_node(&mut self, payload: P, parents: Vec<Cid>, metadata: M) -> Result<Cid> {
         let timestamp = Self::current_timestamp()?;
         let node = Node::new(payload, parents.clone(), timestamp, metadata);
         if self.would_create_cycle()? {
             return Err(GraphError::CycleDetected);
         }
-        self.storage.put(&node);
-        Ok(node.content_id())
+        self.storage.put(&node)?;
+        Ok(node.content_id().unwrap())
     }
 
-    fn current_timestamp() -> Result<u64, GraphError> {
+    fn current_timestamp() -> Result<u64> {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| GraphError::StorageError)
+            .map_err(GraphError::Timestamp)
             .map(|d| d.as_secs())
     }
 
@@ -97,8 +87,8 @@ where
     /// * `true` - If a cycle is detected
     /// * `false` - If no cycle is detected
     ///
-    fn would_create_cycle(&self) -> Result<bool, GraphError> {
-        let node_map: HashMap<Cid, Vec<Cid>> = self.storage.get_node_map();
+    fn would_create_cycle(&self) -> Result<bool> {
+        let node_map: HashMap<Cid, Vec<Cid>> = self.storage.get_node_map()?;
 
         let mut cid_to_string: HashMap<Cid, String> = HashMap::new();
 
@@ -139,7 +129,7 @@ where
     /// * `true` - If a cycle is detected
     /// * `false` - If no cycle is detected
     ///
-    pub fn detect_cycle(&self, edges: &[(&str, &str)]) -> Result<bool, GraphError> {
+    pub fn detect_cycle(&self, edges: &[(&str, &str)]) -> Result<bool> {
         let lines = edges;
         if self.is_cyclic_graph(lines) {
             // cycle_graph
@@ -200,6 +190,14 @@ where
         state.insert(vertex.clone(), VisitState::Visited);
         false
     }
+
+    pub fn latest_head(&self, content_id: &Cid) -> Option<Cid> {
+        self.heads.get(content_id.to_string().as_str()).cloned()
+    }
+
+    pub fn set_head(&mut self, content_id: &Cid, head: Cid) {
+        self.heads.insert(content_id.to_string(), head);
+    }
 }
 
 #[cfg(test)]
@@ -230,21 +228,25 @@ mod tests {
         P: Default + serde::Serialize + serde::de::DeserializeOwned,
         M: Default + serde::Serialize + serde::de::DeserializeOwned,
     {
-        fn get(&self, content_id: &Cid) -> Option<Node<P, M>> {
-            Some(Node::new(
+        fn get(&self, content_id: &Cid) -> Result<Option<Node<P, M>>> {
+            Ok(Some(Node::new(
                 P::default(),
                 self.edges.get(content_id).cloned().unwrap_or_default(),
                 0,
                 M::default(),
-            ))
+            )))
         }
 
-        fn put(&mut self, _node: &Node<P, M>) {}
+        fn put(&self, _node: &Node<P, M>) -> Result<()> {
+            Ok(())
+        }
 
-        fn delete(&mut self, _content_id: &Cid) {}
+        fn delete(&self, _content_id: &Cid) -> Result<()> {
+            Ok(())
+        }
 
-        fn get_node_map(&self) -> HashMap<Cid, Vec<Cid>> {
-            self.edges.clone()
+        fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
+            Ok(self.edges.clone())
         }
     }
 
@@ -415,5 +417,44 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(result.unwrap(), "true");
+    }
+
+    #[test]
+    fn test_latest_head() {
+        let mut dag = DagGraph::<_, String, BTreeMap<String, String>>::new(MockStorage::new());
+        let cid_a = create_test_content_id(b"node_a");
+        let cid_b = create_test_content_id(b"node_b");
+
+        dag.set_head(&cid_a, cid_b);
+        let head = dag.latest_head(&cid_a);
+
+        assert!(head.is_some());
+        assert_eq!(head.unwrap(), cid_b);
+    }
+
+    #[test]
+    fn test_empty_latest_head() {
+        let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(MockStorage::new());
+        let cid_a = create_test_content_id(b"node_a");
+
+        let head = dag.latest_head(&cid_a);
+
+        assert!(head.is_none());
+    }
+
+    #[test]
+    fn test_multiple_heads() {
+        let mut dag = DagGraph::<_, String, BTreeMap<String, String>>::new(MockStorage::new());
+        let cid_a = create_test_content_id(b"node_a");
+        let cid_b = create_test_content_id(b"node_b");
+        let cid_c = create_test_content_id(b"node_c");
+        dag.set_head(&cid_a, cid_b);
+        dag.set_head(&cid_a, cid_c);
+
+        let head = dag.latest_head(&cid_a);
+        println!("head: {:?}", head);
+
+        assert!(head.is_some());
+        assert!(head.unwrap() == cid_c);
     }
 }
