@@ -119,8 +119,8 @@ fn main() {
             }
 
             match dag.add_node(payload, parents, metadata) {
-                Ok(cid) => println!("Added node with CID: {}", cid),
-                Err(err) => eprintln!("Error adding node: {:?}", err),
+                Ok(cid) => println!("Added node with CID: {cid}"),
+                Err(err) => eprintln!("Error adding node: {err:?}"),
             }
         }
         Commands::Show { cid } => match dag.storage.get(&cid) {
@@ -128,15 +128,15 @@ fn main() {
                 println!("Payload: {:?}", node.payload());
                 println!("Parents: {:?}", node.parents());
             }
-            Ok(None) => eprintln!("Node not found: {}", cid),
-            Err(err) => eprintln!("Error getting node: {:?}", err),
+            Ok(None) => eprintln!("Node not found: {cid}"),
+            Err(err) => eprintln!("Error getting node: {err:?}"),
         },
         Commands::Verify { cid } => {
             if let Ok(Some(node)) = dag.storage.get(&cid) {
                 let ok = node.verify_self_integrity(&cid).unwrap();
                 println!("Integrity {}", if ok { "OK" } else { "FAIL" });
             } else {
-                eprintln!("Node not found: {}", cid);
+                eprintln!("Node not found: {cid}");
             }
         }
     }

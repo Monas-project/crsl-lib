@@ -292,7 +292,7 @@ mod tests {
         let num_nodes = 1000;
         let mut nodes = Vec::with_capacity(num_nodes + 1);
         for i in 0..=num_nodes {
-            let node_label = format!("node_{}", i);
+            let node_label = format!("node_{i}");
             let cid = create_test_content_id(node_label.as_bytes());
             nodes.push(cid);
         }
@@ -452,7 +452,7 @@ mod tests {
         dag.set_head(&cid_a, cid_c);
 
         let head = dag.latest_head(&cid_a);
-        println!("head: {:?}", head);
+        println!("head: {head:?}");
 
         assert!(head.is_some());
         assert!(head.unwrap() == cid_c);
