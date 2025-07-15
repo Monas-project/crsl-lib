@@ -37,30 +37,46 @@ where
 
     pub fn commit_operation(&mut self, op: Operation<Cid, Payload>) -> Result<Cid> {
         self.state.apply(op.clone())?;
-        let parents = self
-            .dag
-            .latest_head(&op.target)
-            .into_iter()
-            .collect::<Vec<_>>();
-
+        
         let cid = match &op.kind {
-            OperationType::Create(payload) | OperationType::Update(payload) => self
-                .dag
-                .add_node(payload.clone(), parents, ())
-                .expect("add node"),
+            OperationType::Create(payload) => {
+                // 新規作成の場合はgenesis
+                self.dag.add_genesis_node(payload.clone(), ())?
+            }
+            OperationType::Update(payload) => {
+                // 更新の場合は子ノード
+                let parents = self
+                    .dag
+                    .latest_head(&op.genesis)
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                self.dag.add_version_node(
+                    payload.clone(),
+                    parents,
+                    op.genesis,
+                    ()
+                )?
+            }
             OperationType::Delete => {
-                // For delete operations, we create a node with the last known payload
-                // This ensures we maintain the DAG structure while marking the content as deleted
+                // 削除も子ノードとして記録
+                let parents = self
+                    .dag
+                    .latest_head(&op.genesis)
+                    .into_iter()
+                    .collect::<Vec<_>>();
                 let last_payload = self
                     .state
                     .get_state(&op.target)
                     .expect("content must exist for delete operation");
-                self.dag
-                    .add_node(last_payload, parents, ())
-                    .expect("add node")
+                self.dag.add_version_node(
+                    last_payload,
+                    parents,
+                    op.genesis,
+                    ()
+                )?
             }
         };
-
+        
         self.dag.set_head(&op.target, cid);
         Ok(cid)
     }

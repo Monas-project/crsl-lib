@@ -53,13 +53,67 @@ where
     ///
     pub fn add_node(&mut self, payload: P, parents: Vec<Cid>, metadata: M) -> Result<Cid> {
         let timestamp = Self::current_timestamp()?;
-        let node = Node::new(payload, parents.clone(), timestamp, metadata);
-        let new_cid = node.content_id().unwrap();
+        let node = Node::new_genesis(payload, timestamp, metadata);
+        let new_cid = node.content_id()?;
         if self.would_create_cycle_with(&new_cid, &parents)? {
             return Err(GraphError::CycleDetected);
         }
         self.storage.put(&node)?;
         Ok(new_cid)
+    }
+
+    /// Add a genesis node (first version of content)
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The payload
+    /// * `metadata` - The metadata
+    ///
+    /// # Returns
+    ///
+    /// * `Cid` - The content Id of the new genesis node
+    ///
+    pub fn add_genesis_node(&mut self, payload: P, metadata: M) -> Result<Cid> {
+        let timestamp = Self::current_timestamp()?;
+        let node = Node::new_genesis(payload, timestamp, metadata);
+        let cid = node.content_id()?;
+        
+        self.storage.put(&node)?;
+        self.set_head(&cid, cid);
+        Ok(cid)
+    }
+    
+    /// Add a version node (subsequent version of content)
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The payload
+    /// * `parents` - The parent content Ids
+    /// * `genesis` - The genesis CID that this node belongs to
+    /// * `metadata` - The metadata
+    ///
+    /// # Returns
+    ///
+    /// * `Cid` - The content Id of the new version node
+    ///
+    pub fn add_version_node(
+        &mut self,
+        payload: P,
+        parents: Vec<Cid>,
+        genesis: Cid,
+        metadata: M,
+    ) -> Result<Cid> {
+        let timestamp = Self::current_timestamp()?;
+        let node = Node::new_child(payload, parents.clone(), genesis, timestamp, metadata);
+        let cid = node.content_id()?;
+        
+        if self.would_create_cycle_with(&cid, &parents)? {
+            return Err(GraphError::CycleDetected);
+        }
+        
+        self.storage.put(&node)?;
+        self.set_head(&genesis, cid);
+        Ok(cid)
     }
 
     fn current_timestamp() -> Result<u64> {
@@ -173,12 +227,16 @@ mod tests {
         M: Default + serde::Serialize + serde::de::DeserializeOwned,
     {
         fn get(&self, content_id: &Cid) -> Result<Option<Node<P, M>>> {
-            Ok(Some(Node::new(
-                P::default(),
-                self.edges.get(content_id).cloned().unwrap_or_default(),
-                0,
-                M::default(),
-            )))
+            let parents = self.edges.get(content_id).cloned().unwrap_or_default();
+            
+            let node = if parents.is_empty() {
+                Node::new_genesis(P::default(), 0, M::default())
+            } else {
+                let genesis_cid = *parents.first().unwrap_or(content_id);
+                Node::new_child(P::default(), parents, genesis_cid, 0, M::default())
+            };
+            
+            Ok(Some(node))
         }
 
         fn put(&self, _node: &Node<P, M>) -> Result<()> {
@@ -417,6 +475,28 @@ mod tests {
 
         assert!(head.is_some());
         assert_eq!(head.unwrap(), cid_b);
+    }
+
+    #[test]
+    fn test_add_genesis_node() {
+        let mut dag = DagGraph::new(MockStorage::new());
+        let cid = dag.add_genesis_node("test".to_string(), ()).unwrap();
+        
+        assert_eq!(dag.latest_head(&cid), Some(cid));
+    }
+
+    #[test]
+    fn test_add_version_node() {
+        let mut dag = DagGraph::new(MockStorage::new());
+        let genesis_cid = dag.add_genesis_node("genesis".to_string(), ()).unwrap();
+        let version_cid = dag.add_version_node(
+            "version".to_string(),
+            vec![genesis_cid],
+            genesis_cid,
+            ()
+        ).unwrap();
+        
+        assert_eq!(dag.latest_head(&genesis_cid), Some(version_cid));
     }
 
     #[test]

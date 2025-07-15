@@ -20,6 +20,7 @@ const RAW_CODE: u64 = 0x55;
 /// # Fields
 /// * `payload` - The main content/data of the entry.
 /// * `parents` - A vector of content ids (Content Identifiers) pointing to parent entries.
+/// * `genesis` - The genesis CID that this node belongs to (None for genesis nodes, Some(genesis_cid) for child nodes).
 /// * `timestamp` - Unix timestamp representing when the entry was created.
 /// * `metadata` - Additional information about the entry (e.g., author, tags, or other attributes).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -27,6 +28,7 @@ const RAW_CODE: u64 = 0x55;
 pub struct Node<P, M = BTreeMap<String, String>> {
     pub payload: P,
     pub parents: Vec<Cid>,
+    pub genesis: Option<Cid>,
     pub timestamp: u64,
     pub metadata: M,
 }
@@ -36,20 +38,29 @@ where
     P: Serialize + for<'a> Deserialize<'a>,
     M: Serialize + for<'a> Deserialize<'a>,
 {
-    /// Creates a new Node with the given parameters
-    ///
-    /// # Arguments
-    /// * `payload` - The main content/data to store in the node
-    /// * `parents` - Vector of content ids pointing to parent nodes
-    /// * `timestamp` - Unix timestamp for node creation time
-    /// * `metadata` - Additional information about the node
-    ///
-    /// # Returns
-    /// A new Node instance
-    pub fn new(payload: P, parents: Vec<Cid>, timestamp: u64, metadata: M) -> Self {
+    /// Create a genesis node (the first version)
+    pub fn new_genesis(payload: P, timestamp: u64, metadata: M) -> Self {
+        Node {
+            payload,
+            parents: vec![],
+            genesis: None,
+            timestamp,
+            metadata,
+        }
+    }
+
+    /// Create a child node (subsequent versions)
+    pub fn new_child(
+        payload: P,
+        parents: Vec<Cid>,
+        genesis: Cid,
+        timestamp: u64,
+        metadata: M,
+    ) -> Self {
         Node {
             payload,
             parents,
+            genesis: Some(genesis),
             timestamp,
             metadata,
         }
@@ -156,16 +167,15 @@ mod tests {
     #[test]
     fn test_entry_creation_with_default_metadata() {
         let payload = "test payload".to_string();
-        let parents_content_id = create_test_content_id(b"test");
-        let parents = vec![parents_content_id];
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node = Node::new(payload.clone(), parents, timestamp, metadata);
+        let node = Node::new_genesis(payload.clone(), timestamp, metadata);
 
         assert_eq!(node.payload(), &payload);
-        assert_eq!(node.parents(), &vec![parents_content_id]);
+        assert_eq!(node.parents().len(), 0);
         assert_eq!(node.timestamp(), timestamp);
+        assert_eq!(node.genesis, None);
     }
 
     #[test]
@@ -174,14 +184,16 @@ mod tests {
         let parents_content_id1 = create_test_content_id(b"test1");
         let parents_content_id2 = create_test_content_id(b"test2");
         let parents = vec![parents_content_id1, parents_content_id2];
+        let genesis_cid = create_test_content_id(b"genesis");
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node = Node::new(payload.clone(), parents, timestamp, metadata);
+        let node = Node::new_child(payload.clone(), parents, genesis_cid, timestamp, metadata);
 
         assert_eq!(node.parents().len(), 2);
         assert_eq!(node.parents()[0], parents_content_id1);
         assert_eq!(node.parents()[1], parents_content_id2);
+        assert_eq!(node.genesis, Some(genesis_cid));
     }
 
     #[test]
@@ -189,12 +201,14 @@ mod tests {
         let payload = "test".to_string();
         let parents_content_id = create_test_content_id(b"test");
         let parents = vec![parents_content_id];
+        let genesis_cid = create_test_content_id(b"genesis");
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node = Node::new(
+        let node = Node::new_child(
             payload.clone(),
             parents.clone(),
+            genesis_cid,
             timestamp,
             metadata.clone(),
         );
@@ -209,23 +223,41 @@ mod tests {
     }
 
     #[test]
+    fn test_genesis_content_id() {
+        let payload = "test".to_string();
+        let timestamp = 1234567890;
+        let metadata: BTreeMap<String, String> = BTreeMap::new();
+
+        let node1 = Node::new_genesis(payload.clone(), timestamp, metadata.clone());
+        let node2 = Node::new_genesis(payload.clone(), timestamp, metadata.clone());
+
+        let content_id1 = node1.content_id().unwrap();
+        let content_id2 = node2.content_id().unwrap();
+
+        assert_eq!(content_id1.to_string(), content_id2.to_string());
+    }
+
+    #[test]
     fn test_content_id() {
         let payload = "test".to_string();
         let parents_content_id = create_test_content_id(b"test");
         let parents = vec![parents_content_id];
+        let genesis_cid = create_test_content_id(b"genesis");
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node1 = Node::new(
+        let node1 = Node::new_child(
             payload.clone(),
             parents.clone(),
+            genesis_cid,
             timestamp,
             metadata.clone(),
         );
 
-        let node2 = Node::new(
+        let node2 = Node::new_child(
             payload.clone(),
             parents.clone(),
+            genesis_cid,
             timestamp,
             metadata.clone(),
         );
@@ -241,12 +273,14 @@ mod tests {
         let payload = "test".to_string();
         let parents_content_id = create_test_content_id(b"test");
         let parents = vec![parents_content_id];
+        let genesis_cid = create_test_content_id(b"genesis");
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node = Node::new(
+        let node = Node::new_child(
             payload.clone(),
             parents.clone(),
+            genesis_cid,
             timestamp,
             metadata.clone(),
         );
@@ -260,20 +294,23 @@ mod tests {
         let payload = "test".to_string();
         let parents_content_id = create_test_content_id(b"test");
         let parents = vec![parents_content_id];
+        let genesis_cid = create_test_content_id(b"genesis");
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let node = Node::new(
+        let node = Node::new_child(
             payload.clone(),
             parents.clone(),
+            genesis_cid,
             timestamp,
             metadata.clone(),
         );
 
         let different_payload = "different".to_string();
-        let different_node = Node::new(
+        let different_node = Node::new_child(
             different_payload,
             parents.clone(),
+            genesis_cid,
             timestamp,
             metadata.clone(),
         );
@@ -287,12 +324,14 @@ mod tests {
         let payload = "test payload".to_string();
         let parent1 = create_test_content_id(b"parent1");
         let initial_parents = vec![parent1];
+        let genesis_cid = create_test_content_id(b"genesis");
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let mut node = Node::new(
+        let mut node = Node::new_child(
             payload.clone(),
             initial_parents.clone(),
+            genesis_cid,
             timestamp,
             metadata.clone(),
         );
@@ -312,12 +351,14 @@ mod tests {
         let payload = "test".to_string();
         let parent1 = create_test_content_id(b"parent1");
         let initial_parents = vec![parent1];
+        let genesis_cid = create_test_content_id(b"genesis");
         let timestamp = 1;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let mut node = Node::new(
+        let mut node = Node::new_child(
             payload.clone(),
             initial_parents.clone(),
+            genesis_cid,
             timestamp,
             metadata.clone(),
         );
@@ -338,12 +379,14 @@ mod tests {
         let payload = "test payload".to_string();
         let parent1 = create_test_content_id(b"parent1");
         let initial_parents = vec![parent1];
+        let genesis_cid = create_test_content_id(b"genesis");
         let timestamp = 1234567890;
         let metadata: BTreeMap<String, String> = BTreeMap::new();
 
-        let mut node = Node::new(
+        let mut node = Node::new_child(
             payload.clone(),
             initial_parents.clone(),
+            genesis_cid,
             timestamp,
             metadata.clone(),
         );

@@ -1,6 +1,7 @@
 use bincode::error::{DecodeError, EncodeError};
 use rusty_leveldb::Status as LeveldbError;
 use thiserror::Error;
+use crate::dasl::error::DaslError;
 
 #[derive(Error, Debug)]
 pub enum GraphError {
@@ -17,7 +18,7 @@ pub enum GraphError {
     CycleDetected,
 
     #[error("node not found: {0}")]
-    NodeNotFound(String),
+    NodeNotFound(cid::Cid),
 
     #[error("invalid parent reference: {0}")]
     InvalidParent(String),
@@ -36,6 +37,9 @@ pub enum GraphError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("node error: {0}")]
+    Node(#[from] DaslError),
 }
 
 pub type Result<T> = std::result::Result<T, GraphError>;

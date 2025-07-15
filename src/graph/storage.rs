@@ -144,9 +144,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        Node::new(
+        Node::new_genesis(
             payload.to_string(),
-            vec![],
             timestamp,
             "metadata".to_string(),
         )
