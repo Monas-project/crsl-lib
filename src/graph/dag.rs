@@ -196,6 +196,59 @@ where
     pub fn set_head(&mut self, content_id: &Cid, head: Cid) {
         self.heads.insert(content_id.to_string(), head);
     }
+
+    /// Get genesis CID from any version CID
+    ///
+    /// # Arguments
+    ///
+    /// * `version_cid` - The version CID to get genesis for
+    ///
+    /// # Returns
+    ///
+    /// * `Cid` - The genesis CID
+    ///
+    pub fn get_genesis(&self, version_cid: &Cid) -> Result<Cid> {
+        match self.storage.get(version_cid)? {
+            Some(node) => {
+                match node.genesis {
+                    Some(genesis_cid) => Ok(genesis_cid),
+                    None => Ok(*version_cid),
+                }
+            }
+            None => Err(GraphError::NodeNotFound(*version_cid)),
+        }
+    }
+    
+    /// Get history from a specific version
+    ///
+    /// # Arguments
+    ///
+    /// * `version_cid` - The version CID to get history from
+    ///
+    /// # Returns
+    ///
+    /// * `Vec<Cid>` - History from oldest to newest
+    ///
+    pub fn get_history_from_version(&self, version_cid: &Cid) -> Result<Vec<Cid>> {
+        let mut history = vec![];
+        let mut current = *version_cid;
+        
+        loop {
+            let node = match self.storage.get(&current)? {
+                Some(node) => node,
+                None => return Err(GraphError::NodeNotFound(current)),
+            };
+            history.push(current);
+            
+            if node.parents().is_empty() {
+                break;
+            }
+            current = node.parents()[0];
+        }
+        
+        history.reverse();
+        Ok(history)
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +270,7 @@ mod tests {
         fn setup_graph(&mut self, structure: &[(Cid, Cid)]) {
             for (parent, child) in structure {
                 self.edges.entry(*child).or_default().push(*parent);
+                self.edges.entry(*parent).or_default();
             }
         }
     }
@@ -227,7 +281,12 @@ mod tests {
         M: Default + serde::Serialize + serde::de::DeserializeOwned,
     {
         fn get(&self, content_id: &Cid) -> Result<Option<Node<P, M>>> {
-            let parents = self.edges.get(content_id).cloned().unwrap_or_default();
+            let parents = self.edges.get(content_id).cloned();
+
+            let parents = match parents {
+                Some(p) => p,
+                None => return Ok(None),
+            };
             
             let node = if parents.is_empty() {
                 Node::new_genesis(P::default(), 0, M::default())
@@ -525,5 +584,89 @@ mod tests {
 
         assert!(head.is_some());
         assert!(head.unwrap() == cid_c);
+    }
+
+    #[test]
+    fn test_get_genesis_from_genesis_node() {
+        let mut storage = MockStorage::new();
+        let genesis_cid = create_test_content_id(b"genesis");
+        storage.edges.entry(genesis_cid).or_default();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let result = dag.get_genesis(&genesis_cid);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), genesis_cid);
+    }
+
+    #[test]
+    fn test_get_genesis_from_child_node() {
+        let mut storage = MockStorage::new();
+        let genesis_cid = create_test_content_id(b"genesis");
+        let child_cid = create_test_content_id(b"child");
+        storage.setup_graph(&[(genesis_cid, child_cid)]);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let result = dag.get_genesis(&child_cid);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), genesis_cid);
+    }
+
+    #[test]
+    fn test_get_genesis_node_not_found() {
+        let storage = MockStorage::new();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let non_existent_cid = create_test_content_id(b"non_existent");
+
+        let result = dag.get_genesis(&non_existent_cid);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_history_from_version_simple_path() {
+        let mut storage = MockStorage::new();
+        let cid_a = create_test_content_id(b"node_a");
+        let cid_b = create_test_content_id(b"node_b");
+        let cid_c = create_test_content_id(b"node_c");
+        storage.setup_graph(&[(cid_a, cid_b), (cid_b, cid_c)]);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let history = dag.get_history_from_version(&cid_c).unwrap();
+        assert_eq!(history, vec![cid_a, cid_b, cid_c]);
+    }
+
+    #[test]
+    fn test_get_history_from_version_genesis_only() {
+        let mut storage = MockStorage::new();
+        let genesis_cid = create_test_content_id(b"genesis");
+        storage.edges.entry(genesis_cid).or_default();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let history = dag.get_history_from_version(&genesis_cid).unwrap();
+        assert_eq!(history, vec![genesis_cid]);
+    }
+
+    #[test]
+    fn test_get_history_from_version_long_path() {
+        let mut storage = MockStorage::new();
+        let cid_a = create_test_content_id(b"node_a");
+        let cid_b = create_test_content_id(b"node_b");
+        let cid_c = create_test_content_id(b"node_c");
+        let cid_d = create_test_content_id(b"node_d");
+        let cid_e = create_test_content_id(b"node_e");
+        storage.setup_graph(&[(cid_a, cid_b), (cid_b, cid_c), (cid_c, cid_d), (cid_d, cid_e)]);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let history = dag.get_history_from_version(&cid_e).unwrap();
+        assert_eq!(history, vec![cid_a, cid_b, cid_c, cid_d, cid_e]);
+    }
+
+    #[test]
+    fn test_get_history_from_version_node_not_found() {
+        let storage = MockStorage::new();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let non_existent_cid = create_test_content_id(b"non_existent");
+
+        let result = dag.get_history_from_version(&non_existent_cid);
+        assert!(result.is_err());
     }
 }
