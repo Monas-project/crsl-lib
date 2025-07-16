@@ -107,6 +107,7 @@ where
         let node = Node::new_child(payload, parents.clone(), genesis, timestamp, metadata);
         let cid = node.content_id()?;
 
+        // Use optimized genesis-based cycle detection
         if self.would_create_cycle_with(&cid, &parents)? {
             return Err(GraphError::CycleDetected);
         }
@@ -125,9 +126,35 @@ where
 
     /// Check if adding an edge (new node with parents) would create a cycle
     fn would_create_cycle_with(&self, new_cid: &Cid, parents: &[Cid]) -> Result<bool> {
-        let mut node_map = self.storage.get_node_map()?;
-        node_map.insert(*new_cid, parents.to_vec());
+        // Optimized: only get the minimal necessary nodes for cycle detection
+        let node_map = self.get_subgraph(new_cid, parents)?;
         Self::detect_cycle_cid(&node_map)
+    }
+
+    /// Get minimal subgraph needed for cycle detection
+    /// Only collects nodes that could be part of a cycle with the new node
+    fn get_subgraph(&self, new_cid: &Cid, parents: &[Cid]) -> Result<HashMap<Cid, Vec<Cid>>> {
+        let mut node_map = HashMap::new();
+        node_map.insert(*new_cid, parents.to_vec());
+        
+        let mut to_process = parents.to_vec();
+        let mut processed = std::collections::HashSet::new();
+        
+        while let Some(current_cid) = to_process.pop() {
+            if processed.contains(&current_cid) {
+                continue;
+            }
+            processed.insert(current_cid);
+            
+            if let Some(node) = self.storage.get(&current_cid)? {
+                let node_parents = node.parents().to_vec();
+                node_map.insert(current_cid, node_parents.clone());
+                
+                to_process.extend(node_parents);
+            }
+        }
+        
+        Ok(node_map)
     }
 
     pub fn detect_cycle_cid(node_map: &HashMap<Cid, Vec<Cid>>) -> Result<bool> {
