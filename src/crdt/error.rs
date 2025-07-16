@@ -1,8 +1,8 @@
+use crate::graph::error::GraphError;
 use bincode::error::{DecodeError, EncodeError};
 use rusty_leveldb::Status as LeveldbError;
 use thiserror::Error;
 use ulid::DecodeError as UlidDecodeError;
-use crate::graph::error::GraphError;
 
 #[derive(Error, Debug)]
 pub enum CrdtError {

@@ -111,11 +111,8 @@ where
         while iter.valid() {
             iter.current(&mut key, &mut value);
             if !key.is_empty() && key[0] == 0x10 {
-                match bincode::serde::decode_from_slice::<Node<P, M>, _>(
-                    &value,
-                    bincode::config::standard(),
-                ) {
-                    Ok((node, _)) => {
+                match Node::<P, M>::from_bytes(&value) {
+                    Ok(node) => {
                         let node_cid = node
                             .content_id()
                             .map_err(|e| GraphError::NodeOperation(e.to_string()))?;

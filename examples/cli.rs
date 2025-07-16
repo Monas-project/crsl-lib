@@ -40,6 +40,18 @@ enum Commands {
     Show {
         content_id: String,
     },
+    History {
+        #[arg(short, long)]
+        genesis_id: String,
+    },
+    HistoryFromVersion {
+        #[arg(short, long)]
+        version_id: String,
+    },
+    Genesis {
+        #[arg(short, long)]
+        version_id: String,
+    },
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -80,9 +92,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     let version_cid = repo.commit_operation(op)?;
 
-                    println!("Created content:");
-                    println!("  Content ID: {cid}");
-                    println!("  Version: {version_cid}");
+                    println!("✅ Created content:");
+                    println!("   Content ID: {}", cid);
+                    println!("   Genesis: {}", version_cid);
+                    println!("   Version: {}", version_cid);
+                    println!(
+                        "🔍 Debug: Latest head for genesis {}: {:?}",
+                        version_cid,
+                        repo.latest(&version_cid)
+                    );
                 }
                 Commands::Update {
                     genesis_id,
@@ -102,24 +120,86 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     let version_cid = repo.commit_operation(op)?;
 
-                    println!("Updated content:");
-                    println!("  Genesis ID: {genesis_id}");
-                    println!("  Version: {version_cid}");
+                    println!("📝 Updated content:");
+                    println!("   Genesis ID: {}", genesis_id);
+                    println!("   New Version: {}", version_cid);
                 }
                 Commands::Show { content_id } => {
                     let cid = Cid::try_from(content_id.as_str())?;
 
                     match repo.state.get_state(&cid) {
                         Some(content) => {
-                            println!("Content ID: {content_id}");
-                            println!("Content: {content}");
+                            println!("📄 Content details:");
+                            println!("   Content ID: {}", content_id);
+                            println!("   Content: {}", content);
 
                             if let Some(latest_version) = repo.latest(&cid) {
-                                println!("Latest version: {latest_version}");
+                                println!("   Latest version: {}", latest_version);
                             }
                         }
                         None => {
-                            println!("Content not found: {content_id}");
+                            println!("❌ Content not found: {}", content_id);
+                        }
+                    }
+                }
+                Commands::History { genesis_id } => {
+                    let genesis_cid = Cid::try_from(genesis_id.as_str())?;
+
+                    match repo.get_history(&genesis_cid) {
+                        Ok(history) => {
+                            println!("📜 History for genesis: {}", genesis_id);
+                            if history.is_empty() {
+                                println!("   No history found (genesis only)");
+                            } else {
+                                for (i, version_cid) in history.iter().enumerate() {
+                                    let marker = if i == 0 {
+                                        "🌱"
+                                    } else if i == history.len() - 1 {
+                                        "✨"
+                                    } else {
+                                        "📝"
+                                    };
+                                    println!("   {} {}: {}", marker, i + 1, version_cid);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Error getting history: {}", e);
+                        }
+                    }
+                }
+                Commands::HistoryFromVersion { version_id } => {
+                    let version_cid = Cid::try_from(version_id.as_str())?;
+
+                    match repo.dag.get_history_from_version(&version_cid) {
+                        Ok(history) => {
+                            println!("📜 History from version: {}", version_id);
+                            for (i, version_cid) in history.iter().enumerate() {
+                                let marker = if i == 0 {
+                                    "🌱"
+                                } else if i == history.len() - 1 {
+                                    "✨"
+                                } else {
+                                    "📝"
+                                };
+                                println!("   {} {}: {}", marker, i + 1, version_cid);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Error getting history from version: {}", e);
+                        }
+                    }
+                }
+                Commands::Genesis { version_id } => {
+                    let version_cid = Cid::try_from(version_id.as_str())?;
+
+                    match repo.get_genesis(&version_cid) {
+                        Ok(genesis_cid) => {
+                            println!("🌱 Genesis for version: {}", version_id);
+                            println!("   Genesis CID: {}", genesis_cid);
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Error getting genesis: {}", e);
                         }
                     }
                 }

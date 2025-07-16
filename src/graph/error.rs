@@ -1,7 +1,7 @@
+use crate::dasl::error::DaslError;
 use bincode::error::{DecodeError, EncodeError};
 use rusty_leveldb::Status as LeveldbError;
 use thiserror::Error;
-use crate::dasl::error::DaslError;
 
 #[derive(Error, Debug)]
 pub enum GraphError {
