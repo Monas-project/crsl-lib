@@ -88,7 +88,8 @@ where
     /// Get the complete history from genesis
     pub fn get_history(&self, genesis: &Cid) -> Result<Vec<Cid>> {
         if let Some(latest) = self.latest(genesis) {
-            self.dag.get_history_from_version(&latest)
+            self.dag
+                .get_history_from_version(&latest)
                 .map_err(crate::crdt::error::CrdtError::Graph)
         } else {
             Ok(vec![])
@@ -97,7 +98,8 @@ where
 
     /// Get genesis from any version
     pub fn get_genesis(&self, version: &Cid) -> Result<Cid> {
-        self.dag.get_genesis(version)
+        self.dag
+            .get_genesis(version)
             .map_err(crate::crdt::error::CrdtError::Graph)
     }
 }

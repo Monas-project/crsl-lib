@@ -93,14 +93,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let version_cid = repo.commit_operation(op)?;
 
                     println!("✅ Created content:");
-                    println!("   Content ID: {}", cid);
-                    println!("   Genesis: {}", version_cid);
-                    println!("   Version: {}", version_cid);
-                    println!(
-                        "🔍 Debug: Latest head for genesis {}: {:?}",
-                        version_cid,
-                        repo.latest(&version_cid)
-                    );
+                    println!("   Content ID: {cid}");
+                    println!("   Genesis: {version_cid}");
+                    println!("   Version: {version_cid}");
+                    println!("🔍 Debug: Latest head for genesis {}: {:?}", version_cid, repo.latest(&version_cid));
                 }
                 Commands::Update {
                     genesis_id,
@@ -121,8 +117,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let version_cid = repo.commit_operation(op)?;
 
                     println!("📝 Updated content:");
-                    println!("   Genesis ID: {}", genesis_id);
-                    println!("   New Version: {}", version_cid);
+                    println!("   Genesis ID: {genesis_id}");
+                    println!("   New Version: {version_cid}");
                 }
                 Commands::Show { content_id } => {
                     let cid = Cid::try_from(content_id.as_str())?;
@@ -130,15 +126,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                     match repo.state.get_state(&cid) {
                         Some(content) => {
                             println!("📄 Content details:");
-                            println!("   Content ID: {}", content_id);
-                            println!("   Content: {}", content);
-
+                            println!("   Content ID: {content_id}");
+                            println!("   Content: {content}");
                             if let Some(latest_version) = repo.latest(&cid) {
-                                println!("   Latest version: {}", latest_version);
+                                println!("   Latest version: {latest_version}");
                             }
                         }
                         None => {
-                            println!("❌ Content not found: {}", content_id);
+                            println!("❌ Content not found: {content_id}");
                         }
                     }
                 }
@@ -147,7 +142,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     match repo.get_history(&genesis_cid) {
                         Ok(history) => {
-                            println!("📜 History for genesis: {}", genesis_id);
+                            println!("📜 History for genesis: {genesis_id}");
                             if history.is_empty() {
                                 println!("   No history found (genesis only)");
                             } else {
@@ -164,7 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             }
                         }
                         Err(e) => {
-                            eprintln!("❌ Error getting history: {}", e);
+                            eprintln!("❌ Error getting history: {e}");
                         }
                     }
                 }
@@ -173,7 +168,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     match repo.dag.get_history_from_version(&version_cid) {
                         Ok(history) => {
-                            println!("📜 History from version: {}", version_id);
+                            println!("📜 History from version: {version_id}");
                             for (i, version_cid) in history.iter().enumerate() {
                                 let marker = if i == 0 {
                                     "🌱"
@@ -186,7 +181,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             }
                         }
                         Err(e) => {
-                            eprintln!("❌ Error getting history from version: {}", e);
+                            eprintln!("❌ Error getting history from version: {e}");
                         }
                     }
                 }
@@ -195,11 +190,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     match repo.get_genesis(&version_cid) {
                         Ok(genesis_cid) => {
-                            println!("🌱 Genesis for version: {}", version_id);
-                            println!("   Genesis CID: {}", genesis_cid);
+                            println!("🌱 Genesis for version: {version_id}");
+                            println!("   Genesis CID: {genesis_cid}");
                         }
                         Err(e) => {
-                            eprintln!("❌ Error getting genesis: {}", e);
+                            eprintln!("❌ Error getting genesis: {e}");
                         }
                     }
                 }

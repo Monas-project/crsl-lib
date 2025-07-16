@@ -27,7 +27,7 @@ fmt:
 	cargo fmt
 
 clippy:
-	cargo clippy
+	cargo clippy --workspace --all-targets --profile test --no-deps -- --deny warnings
 
 check: fmt clippy test
 

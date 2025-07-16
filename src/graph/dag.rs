@@ -77,12 +77,12 @@ where
         let timestamp = Self::current_timestamp()?;
         let node = Node::new_genesis(payload, timestamp, metadata);
         let cid = node.content_id()?;
-        
+
         self.storage.put(&node)?;
         self.set_head(&cid, cid);
         Ok(cid)
     }
-    
+
     /// Add a version node (subsequent version of content)
     ///
     /// # Arguments
@@ -106,11 +106,11 @@ where
         let timestamp = Self::current_timestamp()?;
         let node = Node::new_child(payload, parents.clone(), genesis, timestamp, metadata);
         let cid = node.content_id()?;
-        
+
         if self.would_create_cycle_with(&cid, &parents)? {
             return Err(GraphError::CycleDetected);
         }
-        
+
         self.storage.put(&node)?;
         self.set_head(&genesis, cid);
         Ok(cid)
@@ -209,16 +209,14 @@ where
     ///
     pub fn get_genesis(&self, version_cid: &Cid) -> Result<Cid> {
         match self.storage.get(version_cid)? {
-            Some(node) => {
-                match node.genesis {
-                    Some(genesis_cid) => Ok(genesis_cid),
-                    None => Ok(*version_cid),
-                }
-            }
+            Some(node) => match node.genesis {
+                Some(genesis_cid) => Ok(genesis_cid),
+                None => Ok(*version_cid),
+            },
             None => Err(GraphError::NodeNotFound(*version_cid)),
         }
     }
-    
+
     /// Get history from a specific version
     ///
     /// # Arguments
@@ -232,20 +230,20 @@ where
     pub fn get_history_from_version(&self, version_cid: &Cid) -> Result<Vec<Cid>> {
         let mut history = vec![];
         let mut current = *version_cid;
-        
+
         loop {
             let node = match self.storage.get(&current)? {
                 Some(node) => node,
                 None => return Err(GraphError::NodeNotFound(current)),
             };
             history.push(current);
-            
+
             if node.parents().is_empty() {
                 break;
             }
             current = node.parents()[0];
         }
-        
+
         history.reverse();
         Ok(history)
     }
@@ -287,14 +285,14 @@ mod tests {
                 Some(p) => p,
                 None => return Ok(None),
             };
-            
+
             let node = if parents.is_empty() {
                 Node::new_genesis(P::default(), 0, M::default())
             } else {
                 let genesis_cid = *parents.first().unwrap_or(content_id);
                 Node::new_child(P::default(), parents, genesis_cid, 0, M::default())
             };
-            
+
             Ok(Some(node))
         }
 
@@ -540,7 +538,7 @@ mod tests {
     fn test_add_genesis_node() {
         let mut dag = DagGraph::new(MockStorage::new());
         let cid = dag.add_genesis_node("test".to_string(), ()).unwrap();
-        
+
         assert_eq!(dag.latest_head(&cid), Some(cid));
     }
 
@@ -548,13 +546,10 @@ mod tests {
     fn test_add_version_node() {
         let mut dag = DagGraph::new(MockStorage::new());
         let genesis_cid = dag.add_genesis_node("genesis".to_string(), ()).unwrap();
-        let version_cid = dag.add_version_node(
-            "version".to_string(),
-            vec![genesis_cid],
-            genesis_cid,
-            ()
-        ).unwrap();
-        
+        let version_cid = dag
+            .add_version_node("version".to_string(), vec![genesis_cid], genesis_cid, ())
+            .unwrap();
+
         assert_eq!(dag.latest_head(&genesis_cid), Some(version_cid));
     }
 
@@ -653,7 +648,12 @@ mod tests {
         let cid_c = create_test_content_id(b"node_c");
         let cid_d = create_test_content_id(b"node_d");
         let cid_e = create_test_content_id(b"node_e");
-        storage.setup_graph(&[(cid_a, cid_b), (cid_b, cid_c), (cid_c, cid_d), (cid_d, cid_e)]);
+        storage.setup_graph(&[
+            (cid_a, cid_b),
+            (cid_b, cid_c),
+            (cid_c, cid_d),
+            (cid_d, cid_e),
+        ]);
         let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
 
         let history = dag.get_history_from_version(&cid_e).unwrap();
