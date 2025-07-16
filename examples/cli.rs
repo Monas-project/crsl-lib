@@ -96,7 +96,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     println!("   Content ID: {cid}");
                     println!("   Genesis: {version_cid}");
                     println!("   Version: {version_cid}");
-                    println!("🔍 Debug: Latest head for genesis {}: {:?}", version_cid, repo.latest(&version_cid));
+                    println!(
+                        "🔍 Debug: Latest head for genesis {}: {:?}",
+                        version_cid,
+                        repo.latest(&version_cid)
+                    );
                 }
                 Commands::Update {
                     genesis_id,
