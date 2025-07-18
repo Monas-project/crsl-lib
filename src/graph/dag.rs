@@ -136,24 +136,24 @@ where
     fn get_subgraph(&self, new_cid: &Cid, parents: &[Cid]) -> Result<HashMap<Cid, Vec<Cid>>> {
         let mut node_map = HashMap::new();
         node_map.insert(*new_cid, parents.to_vec());
-        
+
         let mut to_process = parents.to_vec();
         let mut processed = std::collections::HashSet::new();
-        
+
         while let Some(current_cid) = to_process.pop() {
             if processed.contains(&current_cid) {
                 continue;
             }
             processed.insert(current_cid);
-            
+
             if let Some(node) = self.storage.get(&current_cid)? {
                 let node_parents = node.parents().to_vec();
                 node_map.insert(current_cid, node_parents.clone());
-                
+
                 to_process.extend(node_parents);
             }
         }
-        
+
         Ok(node_map)
     }
 
