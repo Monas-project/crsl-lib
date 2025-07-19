@@ -24,13 +24,6 @@ where
     _m_marker: PhantomData<M>,
 }
 
-#[derive(PartialEq)]
-enum VisitState {
-    NotVisited,
-    Visiting,
-    Visited,
-}
-
 impl<S, P, M> DagGraph<S, P, M>
 where
     S: NodeStorage<P, M>,
@@ -60,12 +53,68 @@ where
     ///
     pub fn add_node(&mut self, payload: P, parents: Vec<Cid>, metadata: M) -> Result<Cid> {
         let timestamp = Self::current_timestamp()?;
-        let node = Node::new(payload, parents.clone(), timestamp, metadata);
-        if self.would_create_cycle()? {
+        let node = Node::new_genesis(payload, timestamp, metadata);
+        let new_cid = node.content_id()?;
+        if self.would_create_cycle_with(&new_cid, &parents)? {
             return Err(GraphError::CycleDetected);
         }
         self.storage.put(&node)?;
-        Ok(node.content_id().unwrap())
+        Ok(new_cid)
+    }
+
+    /// Add a genesis node (first version of content)
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The payload
+    /// * `metadata` - The metadata
+    ///
+    /// # Returns
+    ///
+    /// * `Cid` - The content Id of the new genesis node
+    ///
+    pub fn add_genesis_node(&mut self, payload: P, metadata: M) -> Result<Cid> {
+        let timestamp = Self::current_timestamp()?;
+        let node = Node::new_genesis(payload, timestamp, metadata);
+        let cid = node.content_id()?;
+
+        self.storage.put(&node)?;
+        self.set_head(&cid, cid);
+        Ok(cid)
+    }
+
+    /// Add a version node (subsequent version of content)
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The payload
+    /// * `parents` - The parent content Ids
+    /// * `genesis` - The genesis CID that this node belongs to
+    /// * `metadata` - The metadata
+    ///
+    /// # Returns
+    ///
+    /// * `Cid` - The content Id of the new version node
+    ///
+    pub fn add_version_node(
+        &mut self,
+        payload: P,
+        parents: Vec<Cid>,
+        genesis: Cid,
+        metadata: M,
+    ) -> Result<Cid> {
+        let timestamp = Self::current_timestamp()?;
+        let node = Node::new_child(payload, parents.clone(), genesis, timestamp, metadata);
+        let cid = node.content_id()?;
+
+        // Use optimized genesis-based cycle detection
+        if self.would_create_cycle_with(&cid, &parents)? {
+            return Err(GraphError::CycleDetected);
+        }
+
+        self.storage.put(&node)?;
+        self.set_head(&genesis, cid);
+        Ok(cid)
     }
 
     fn current_timestamp() -> Result<u64> {
@@ -75,119 +124,95 @@ where
             .map(|d| d.as_secs())
     }
 
-    /// Check if adding an edge would create a cycle
-    ///
-    /// # Arguments
-    ///
-    /// * `parent_cid` - The parent content Id
-    /// * `child_cid` - The child content Id
-    ///
-    /// # Returns
-    ///
-    /// * `true` - If a cycle is detected
-    /// * `false` - If no cycle is detected
-    ///
-    fn would_create_cycle(&self) -> Result<bool> {
-        let node_map: HashMap<Cid, Vec<Cid>> = self.storage.get_node_map()?;
-
-        let mut cid_to_string: HashMap<Cid, String> = HashMap::new();
-
-        for (child, parents) in &node_map {
-            if !cid_to_string.contains_key(child) {
-                cid_to_string.insert(*child, child.to_string());
-            }
-
-            for parent in parents {
-                if !cid_to_string.contains_key(parent) {
-                    cid_to_string.insert(*parent, parent.to_string());
-                }
-            }
-        }
-
-        let mut edges: Vec<(&str, &str)> = Vec::new();
-        for (child, parents) in &node_map {
-            let child_str = cid_to_string.get(child).unwrap().as_str();
-
-            for parent in parents {
-                let parent_str = cid_to_string.get(parent).unwrap().as_str();
-                edges.push((parent_str, child_str));
-            }
-        }
-
-        self.detect_cycle(&edges)
+    /// Check if adding an edge (new node with parents) would create a cycle
+    fn would_create_cycle_with(&self, new_cid: &Cid, parents: &[Cid]) -> Result<bool> {
+        // Optimized: only get the minimal necessary nodes for cycle detection
+        let node_map = self.get_subgraph(new_cid, parents)?;
+        Self::detect_cycle_cid(&node_map)
     }
 
-    /// Detect a cycle in the graph
-    /// An algorithm that uses DFS(Depth-First search) to detect whether a graph is cyclic or acyclic.
-    ///
-    /// # Arguments
-    ///
-    /// * `edges` - This is relationship between nodes.
-    ///
-    /// # Returns
-    ///
-    /// * `true` - If a cycle is detected
-    /// * `false` - If no cycle is detected
-    ///
-    pub fn detect_cycle(&self, edges: &[(&str, &str)]) -> Result<bool> {
-        let lines = edges;
-        if self.is_cyclic_graph(lines) {
-            // cycle_graph
-            Ok(true)
-        } else {
-            // acyclic_graph
-            Ok(false)
+    /// Get minimal subgraph needed for cycle detection
+    /// Only collects nodes that could be part of a cycle with the new node
+    fn get_subgraph(&self, new_cid: &Cid, parents: &[Cid]) -> Result<HashMap<Cid, Vec<Cid>>> {
+        let mut node_map = HashMap::new();
+        node_map.insert(*new_cid, parents.to_vec());
+
+        let mut to_process = parents.to_vec();
+        let mut processed = std::collections::HashSet::new();
+
+        while let Some(current_cid) = to_process.pop() {
+            if processed.contains(&current_cid) {
+                continue;
+            }
+            processed.insert(current_cid);
+
+            if let Some(node) = self.storage.get(&current_cid)? {
+                let node_parents = node.parents().to_vec();
+                node_map.insert(current_cid, node_parents.clone());
+
+                to_process.extend(node_parents);
+            }
         }
+
+        Ok(node_map)
     }
 
-    fn is_cyclic_graph(&self, lines: &[(&str, &str)]) -> bool {
-        let graph = self.build_graph(lines);
-        let mut state = HashMap::new();
-        for vertex in graph.keys() {
-            state.insert(vertex.clone(), VisitState::NotVisited);
-        }
-        for vertex in graph.keys() {
-            if state.get(vertex) == Some(&VisitState::NotVisited)
-                && Self::dfs(vertex, &graph, &mut state)
+    pub fn detect_cycle_cid(node_map: &HashMap<Cid, Vec<Cid>>) -> Result<bool> {
+        let graph = Self::build_adjacency_list(node_map);
+        let mut visited = std::collections::HashSet::new();
+        let mut rec_stack = std::collections::HashSet::new();
+
+        for node in graph.keys() {
+            if !visited.contains(node)
+                && Self::has_cycle(*node, &graph, &mut visited, &mut rec_stack)
             {
-                return true;
+                return Ok(true);
             }
         }
-        false
+        Ok(false)
     }
 
-    fn build_graph(&self, lines: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
-        let mut graph = HashMap::new();
-        for (u, v) in lines {
-            graph
-                .entry(u.to_string())
-                .or_insert_with(Vec::new)
-                .push(v.to_string());
-            graph.entry(v.to_string()).or_insert_with(Vec::new);
+    fn build_adjacency_list(node_map: &HashMap<Cid, Vec<Cid>>) -> HashMap<Cid, Vec<Cid>> {
+        let mut graph: HashMap<Cid, Vec<Cid>> = HashMap::new();
+
+        for (child, parents) in node_map {
+            graph.entry(*child).or_default();
+            for parent in parents {
+                graph.entry(*parent).or_default();
+            }
         }
+
+        for (child, parents) in node_map {
+            for parent in parents {
+                graph.get_mut(parent).unwrap().push(*child);
+            }
+        }
+
         graph
     }
 
-    fn dfs(
-        vertex: &String,
-        graph: &HashMap<String, Vec<String>>,
-        state: &mut HashMap<String, VisitState>,
+    fn has_cycle(
+        node: Cid,
+        graph: &HashMap<Cid, Vec<Cid>>,
+        visited: &mut std::collections::HashSet<Cid>,
+        rec_stack: &mut std::collections::HashSet<Cid>,
     ) -> bool {
-        state.insert(vertex.clone(), VisitState::Visiting);
-        if let Some(neighbors) = graph.get(vertex) {
-            for neighbor in neighbors {
-                match state.get(neighbor) {
-                    Some(VisitState::NotVisited) => {
-                        if Self::dfs(neighbor, graph, state) {
-                            return true;
-                        }
+        visited.insert(node);
+        rec_stack.insert(node);
+
+        if let Some(neighbors) = graph.get(&node) {
+            for &neighbor in neighbors {
+                if !visited.contains(&neighbor) {
+                    if Self::has_cycle(neighbor, graph, visited, rec_stack) {
+                        return true;
                     }
-                    Some(VisitState::Visiting) => return true,
-                    _ => {}
+                } else if rec_stack.contains(&neighbor) {
+                    return true;
                 }
             }
         }
-        state.insert(vertex.clone(), VisitState::Visited);
+
+        rec_stack.remove(&node);
         false
     }
 
@@ -197,6 +222,57 @@ where
 
     pub fn set_head(&mut self, content_id: &Cid, head: Cid) {
         self.heads.insert(content_id.to_string(), head);
+    }
+
+    /// Get genesis CID from any version CID
+    ///
+    /// # Arguments
+    ///
+    /// * `version_cid` - The version CID to get genesis for
+    ///
+    /// # Returns
+    ///
+    /// * `Cid` - The genesis CID
+    ///
+    pub fn get_genesis(&self, version_cid: &Cid) -> Result<Cid> {
+        match self.storage.get(version_cid)? {
+            Some(node) => match node.genesis {
+                Some(genesis_cid) => Ok(genesis_cid),
+                None => Ok(*version_cid),
+            },
+            None => Err(GraphError::NodeNotFound(*version_cid)),
+        }
+    }
+
+    /// Get history from a specific version
+    ///
+    /// # Arguments
+    ///
+    /// * `version_cid` - The version CID to get history from
+    ///
+    /// # Returns
+    ///
+    /// * `Vec<Cid>` - History from oldest to newest
+    ///
+    pub fn get_history_from_version(&self, version_cid: &Cid) -> Result<Vec<Cid>> {
+        let mut history = vec![];
+        let mut current = *version_cid;
+
+        loop {
+            let node = match self.storage.get(&current)? {
+                Some(node) => node,
+                None => return Err(GraphError::NodeNotFound(current)),
+            };
+            history.push(current);
+
+            if node.parents().is_empty() {
+                break;
+            }
+            current = node.parents()[0];
+        }
+
+        history.reverse();
+        Ok(history)
     }
 }
 
@@ -219,6 +295,7 @@ mod tests {
         fn setup_graph(&mut self, structure: &[(Cid, Cid)]) {
             for (parent, child) in structure {
                 self.edges.entry(*child).or_default().push(*parent);
+                self.edges.entry(*parent).or_default();
             }
         }
     }
@@ -229,12 +306,21 @@ mod tests {
         M: Default + serde::Serialize + serde::de::DeserializeOwned,
     {
         fn get(&self, content_id: &Cid) -> Result<Option<Node<P, M>>> {
-            Ok(Some(Node::new(
-                P::default(),
-                self.edges.get(content_id).cloned().unwrap_or_default(),
-                0,
-                M::default(),
-            )))
+            let parents = self.edges.get(content_id).cloned();
+
+            let parents = match parents {
+                Some(p) => p,
+                None => return Ok(None),
+            };
+
+            let node = if parents.is_empty() {
+                Node::new_genesis(P::default(), 0, M::default())
+            } else {
+                let genesis_cid = *parents.first().unwrap_or(content_id);
+                Node::new_child(P::default(), parents, genesis_cid, 0, M::default())
+            };
+
+            Ok(Some(node))
         }
 
         fn put(&self, _node: &Node<P, M>) -> Result<()> {
@@ -266,9 +352,15 @@ mod tests {
         let cid_c = create_test_content_id(b"node_c");
         let cid_d = create_test_content_id(b"node_d");
         storage.setup_graph(&[(cid_a, cid_b), (cid_b, cid_c), (cid_c, cid_d)]);
-        let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
 
-        let result = dag.would_create_cycle();
+        let node_map =
+            <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
+                &dag.storage,
+            )
+            .unwrap();
+        let result =
+            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(!result.unwrap(), "false");
@@ -277,9 +369,15 @@ mod tests {
     #[test]
     fn test_empty_graph_has_acyclic() {
         let storage = MockStorage::new();
-        let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
 
-        let result = dag.would_create_cycle();
+        let node_map =
+            <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
+                &dag.storage,
+            )
+            .unwrap();
+        let result =
+            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(!result.unwrap(), "false");
@@ -298,9 +396,15 @@ mod tests {
         }
         let edges: Vec<_> = nodes.windows(2).map(|pair| (pair[0], pair[1])).collect();
         storage.setup_graph(&edges);
-        let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
 
-        let result = dag.would_create_cycle();
+        let node_map =
+            <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
+                &dag.storage,
+            )
+            .unwrap();
+        let result =
+            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(!result.unwrap(), "false");
@@ -332,9 +436,15 @@ mod tests {
             (cid_g, cid_h),
             (cid_h, cid_a),
         ]);
-        let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
 
-        let result = dag.would_create_cycle();
+        let node_map =
+            <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
+                &dag.storage,
+            )
+            .unwrap();
+        let result =
+            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(!result.unwrap(), "false");
@@ -347,9 +457,15 @@ mod tests {
         let cid_b = create_test_content_id(b"node_b");
         let cid_c = create_test_content_id(b"node_c");
         storage.setup_graph(&[(cid_a, cid_b), (cid_b, cid_c), (cid_c, cid_a)]);
-        let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
 
-        let result = dag.would_create_cycle();
+        let node_map =
+            <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
+                &dag.storage,
+            )
+            .unwrap();
+        let result =
+            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(result.unwrap(), "true");
@@ -381,9 +497,15 @@ mod tests {
             (cid_i, cid_j),
             (cid_j, cid_a),
         ]);
-        let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
 
-        let result = dag.would_create_cycle();
+        let node_map =
+            <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
+                &dag.storage,
+            )
+            .unwrap();
+        let result =
+            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(result.unwrap(), "true");
@@ -411,9 +533,15 @@ mod tests {
             (cid_c, cid_e),
             (cid_e, cid_a),
         ]);
-        let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(storage);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
 
-        let result = dag.would_create_cycle();
+        let node_map =
+            <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
+                &dag.storage,
+            )
+            .unwrap();
+        let result =
+            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(result.unwrap(), "true");
@@ -421,7 +549,8 @@ mod tests {
 
     #[test]
     fn test_latest_head() {
-        let mut dag = DagGraph::<_, String, BTreeMap<String, String>>::new(MockStorage::new());
+        let mut dag =
+            DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(MockStorage::new());
         let cid_a = create_test_content_id(b"node_a");
         let cid_b = create_test_content_id(b"node_b");
 
@@ -433,8 +562,28 @@ mod tests {
     }
 
     #[test]
+    fn test_add_genesis_node() {
+        let mut dag = DagGraph::new(MockStorage::new());
+        let cid = dag.add_genesis_node("test".to_string(), ()).unwrap();
+
+        assert_eq!(dag.latest_head(&cid), Some(cid));
+    }
+
+    #[test]
+    fn test_add_version_node() {
+        let mut dag = DagGraph::new(MockStorage::new());
+        let genesis_cid = dag.add_genesis_node("genesis".to_string(), ()).unwrap();
+        let version_cid = dag
+            .add_version_node("version".to_string(), vec![genesis_cid], genesis_cid, ())
+            .unwrap();
+
+        assert_eq!(dag.latest_head(&genesis_cid), Some(version_cid));
+    }
+
+    #[test]
     fn test_empty_latest_head() {
-        let dag = DagGraph::<_, String, BTreeMap<String, String>>::new(MockStorage::new());
+        let dag =
+            DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(MockStorage::new());
         let cid_a = create_test_content_id(b"node_a");
 
         let head = dag.latest_head(&cid_a);
@@ -444,7 +593,8 @@ mod tests {
 
     #[test]
     fn test_multiple_heads() {
-        let mut dag = DagGraph::<_, String, BTreeMap<String, String>>::new(MockStorage::new());
+        let mut dag =
+            DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(MockStorage::new());
         let cid_a = create_test_content_id(b"node_a");
         let cid_b = create_test_content_id(b"node_b");
         let cid_c = create_test_content_id(b"node_c");
@@ -456,5 +606,94 @@ mod tests {
 
         assert!(head.is_some());
         assert!(head.unwrap() == cid_c);
+    }
+
+    #[test]
+    fn test_get_genesis_from_genesis_node() {
+        let mut storage = MockStorage::new();
+        let genesis_cid = create_test_content_id(b"genesis");
+        storage.edges.entry(genesis_cid).or_default();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let result = dag.get_genesis(&genesis_cid);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), genesis_cid);
+    }
+
+    #[test]
+    fn test_get_genesis_from_child_node() {
+        let mut storage = MockStorage::new();
+        let genesis_cid = create_test_content_id(b"genesis");
+        let child_cid = create_test_content_id(b"child");
+        storage.setup_graph(&[(genesis_cid, child_cid)]);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let result = dag.get_genesis(&child_cid);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), genesis_cid);
+    }
+
+    #[test]
+    fn test_get_genesis_node_not_found() {
+        let storage = MockStorage::new();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let non_existent_cid = create_test_content_id(b"non_existent");
+
+        let result = dag.get_genesis(&non_existent_cid);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_history_from_version_simple_path() {
+        let mut storage = MockStorage::new();
+        let cid_a = create_test_content_id(b"node_a");
+        let cid_b = create_test_content_id(b"node_b");
+        let cid_c = create_test_content_id(b"node_c");
+        storage.setup_graph(&[(cid_a, cid_b), (cid_b, cid_c)]);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let history = dag.get_history_from_version(&cid_c).unwrap();
+        assert_eq!(history, vec![cid_a, cid_b, cid_c]);
+    }
+
+    #[test]
+    fn test_get_history_from_version_genesis_only() {
+        let mut storage = MockStorage::new();
+        let genesis_cid = create_test_content_id(b"genesis");
+        storage.edges.entry(genesis_cid).or_default();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let history = dag.get_history_from_version(&genesis_cid).unwrap();
+        assert_eq!(history, vec![genesis_cid]);
+    }
+
+    #[test]
+    fn test_get_history_from_version_long_path() {
+        let mut storage = MockStorage::new();
+        let cid_a = create_test_content_id(b"node_a");
+        let cid_b = create_test_content_id(b"node_b");
+        let cid_c = create_test_content_id(b"node_c");
+        let cid_d = create_test_content_id(b"node_d");
+        let cid_e = create_test_content_id(b"node_e");
+        storage.setup_graph(&[
+            (cid_a, cid_b),
+            (cid_b, cid_c),
+            (cid_c, cid_d),
+            (cid_d, cid_e),
+        ]);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let history = dag.get_history_from_version(&cid_e).unwrap();
+        assert_eq!(history, vec![cid_a, cid_b, cid_c, cid_d, cid_e]);
+    }
+
+    #[test]
+    fn test_get_history_from_version_node_not_found() {
+        let storage = MockStorage::new();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let non_existent_cid = create_test_content_id(b"non_existent");
+
+        let result = dag.get_history_from_version(&non_existent_cid);
+        assert!(result.is_err());
     }
 }
