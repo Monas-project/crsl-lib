@@ -1,4 +1,4 @@
-.PHONY: help test fmt clippy check clean cli-init cli-create cli-update cli-show demo dev-setup
+.PHONY: help test fmt clippy check clean cli-init cli-create cli-update cli-show cli-history cli-history-from-version cli-genesis demo dev-setup
 
 help:
 	@echo "CRSL Development Commands:"
@@ -14,6 +14,9 @@ help:
 	@echo "  make cli-create - Create sample content"
 	@echo "  make cli-update - Update content (requires GENESIS_ID)"
 	@echo "  make cli-show   - Show content (requires ID)"
+	@echo "  make cli-history - Show history from genesis (requires GENESIS_ID)"
+	@echo "  make cli-history-from-version - Show history from version (requires VERSION_ID)"
+	@echo "  make cli-genesis - Get genesis from version (requires VERSION_ID)"
 	@echo "  make demo       - Run complete demo workflow"
 	@echo "  make dev-setup  - Setup development environment"
 
@@ -24,7 +27,7 @@ fmt:
 	cargo fmt
 
 clippy:
-	cargo clippy
+	cargo clippy --workspace --all-targets --profile test --no-deps -- --deny warnings
 
 check: fmt clippy test
 
@@ -73,6 +76,39 @@ ifndef ID
 	@exit 1
 endif
 	cargo run --example cli -- show $(ID)
+
+cli-history:
+ifndef GENESIS_ID
+	@echo "Error: GENESIS_ID is required"
+	@echo "Usage: make cli-history GENESIS_ID=<genesis-id>"
+	@echo ""
+	@echo "Example:"
+	@echo "  make cli-history GENESIS_ID=QmExample123"
+	@exit 1
+endif
+	cargo run --example cli -- history -g $(GENESIS_ID)
+
+cli-history-from-version:
+ifndef VERSION_ID
+	@echo "Error: VERSION_ID is required"
+	@echo "Usage: make cli-history-from-version VERSION_ID=<version-id>"
+	@echo ""
+	@echo "Example:"
+	@echo "  make cli-history-from-version VERSION_ID=QmExample123"
+	@exit 1
+endif
+	cargo run --example cli -- history-from-version -v $(VERSION_ID)
+
+cli-genesis:
+ifndef VERSION_ID
+	@echo "Error: VERSION_ID is required"
+	@echo "Usage: make cli-genesis VERSION_ID=<version-id>"
+	@echo ""
+	@echo "Example:"
+	@echo "  make cli-genesis VERSION_ID=QmExample123"
+	@exit 1
+endif
+	cargo run --example cli -- genesis -v $(VERSION_ID)
 
 # Development setup
 dev-setup: cli-init cli-create
