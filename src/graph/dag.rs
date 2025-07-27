@@ -8,11 +8,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Directed Acyclic Graph(DAG) Structure
 ///
-/// # Arguments
+/// # Type Parameters
 ///
-/// * `S` - NodeStorage
-/// * `P` - Payload
-/// * `M` - Metadata
+/// * `S` - Storage type that implements NodeStorage<P, M>
+/// * `P` - Payload type
+/// * `M` - Metadata type
 #[derive(Debug)]
 pub struct DagGraph<S, P, M>
 where
@@ -35,29 +35,6 @@ where
             _p_marker: PhantomData,
             _m_marker: PhantomData,
         }
-    }
-
-    /// Add an edge to the graph
-    ///
-    /// # Arguments
-    ///
-    /// * `payload` - The payload
-    /// * `parents` - The parent content Ids
-    /// * `metadata` - The metadata
-    ///
-    /// # Returns
-    ///
-    /// * `Cid` - The content Id of the new node
-    ///
-    pub fn add_node(&mut self, payload: P, parents: Vec<Cid>, metadata: M) -> Result<Cid> {
-        let timestamp = Self::current_timestamp()?;
-        let node = Node::new_genesis(payload, timestamp, metadata);
-        let new_cid = node.content_id()?;
-        if self.would_create_cycle_with(&new_cid, &parents)? {
-            return Err(GraphError::CycleDetected);
-        }
-        self.storage.put(&node)?;
-        Ok(new_cid)
     }
 
     /// Add a genesis node (first version of content)
