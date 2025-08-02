@@ -37,41 +37,74 @@ where
 
     pub fn commit_operation(&mut self, op: Operation<Cid, Payload>) -> Result<Cid> {
         self.state.apply(op.clone())?;
-        let parents = self
-            .dag
-            .latest_head(&op.target)
-            .into_iter()
-            .collect::<Vec<_>>();
 
         let cid = match &op.kind {
-            OperationType::Create(payload) | OperationType::Update(payload) => self
-                .dag
-                .add_node(payload.clone(), parents, ())
-                .expect("add node"),
+            OperationType::Create(payload) => {
+                let genesis_cid = self.dag.add_genesis_node(payload.clone(), ())?;
+                self.dag.set_head(&genesis_cid, genesis_cid);
+                genesis_cid
+            }
+            OperationType::Update(payload) => {
+                let parents = self
+                    .dag
+                    .latest_head(&op.genesis)
+                    .map(|head| vec![head])
+                    .unwrap_or_default();
+
+                let version_cid =
+                    self.dag
+                        .add_version_node(payload.clone(), parents, op.genesis, ())?;
+
+                self.dag.set_head(&op.genesis, version_cid);
+                version_cid
+            }
             OperationType::Delete => {
-                // For delete operations, we create a node with the last known payload
-                // This ensures we maintain the DAG structure while marking the content as deleted
+                let parents = self
+                    .dag
+                    .latest_head(&op.genesis)
+                    .map(|head| vec![head])
+                    .unwrap_or_default();
+
                 let last_payload = self
                     .state
                     .get_state(&op.target)
                     .expect("content must exist for delete operation");
-                self.dag
-                    .add_node(last_payload, parents, ())
-                    .expect("add node")
+
+                let version_cid =
+                    self.dag
+                        .add_version_node(last_payload, parents, op.genesis, ())?;
+                self.dag.set_head(&op.genesis, version_cid);
+                version_cid
             }
         };
 
-        self.dag.set_head(&op.target, cid);
         Ok(cid)
     }
 
     pub fn latest(&self, target: &Cid) -> Option<Cid> {
         self.dag.latest_head(target)
     }
+
+    /// Get the complete history from genesis
+    pub fn get_history(&self, genesis: &Cid) -> Result<Vec<Cid>> {
+        if let Some(latest) = self.latest(genesis) {
+            self.dag
+                .get_history_from_version(&latest)
+                .map_err(crate::crdt::error::CrdtError::Graph)
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    /// Get genesis from any version
+    pub fn get_genesis(&self, version: &Cid) -> Result<Cid> {
+        self.dag
+            .get_genesis(version)
+            .map_err(crate::crdt::error::CrdtError::Graph)
+    }
 }
 
 #[cfg(test)]
-// todo: implement tests
 mod tests {
     use super::*;
     use crate::crdt::operation::{Operation, OperationType};
@@ -143,8 +176,8 @@ mod tests {
 
         let cid = repo.commit_operation(op).unwrap();
 
-        assert!(repo.latest(&target).is_some());
-        assert_eq!(repo.latest(&target).unwrap(), cid);
+        assert!(repo.latest(&cid).is_some());
+        assert_eq!(repo.latest(&cid).unwrap(), cid);
     }
 
     #[test]
@@ -167,8 +200,8 @@ mod tests {
         );
         let update_cid = repo.commit_operation(update_op).unwrap();
 
-        assert!(repo.latest(&target).is_some());
-        assert_eq!(repo.latest(&target).unwrap(), update_cid);
+        assert!(repo.latest(&create_cid).is_some());
+        assert_eq!(repo.latest(&create_cid).unwrap(), update_cid);
         assert_ne!(create_cid, update_cid);
     }
 
@@ -188,8 +221,8 @@ mod tests {
         let delete_op = make_test_operation_with_genesis(target, create_cid, OperationType::Delete);
         let delete_cid = repo.commit_operation(delete_op).unwrap();
 
-        assert!(repo.latest(&target).is_some());
-        assert_eq!(repo.latest(&target).unwrap(), delete_cid);
+        assert!(repo.latest(&create_cid).is_some());
+        assert_eq!(repo.latest(&create_cid).unwrap(), delete_cid);
         assert_ne!(create_cid, delete_cid);
     }
 
@@ -205,7 +238,6 @@ mod tests {
             multihash::Multihash::<64>::wrap(0x12, b"test2").unwrap(),
         );
 
-        // Create two different targets
         let create1_op = make_test_operation(
             target1,
             OperationType::Create(TestPayload("target1".to_string())),
@@ -218,10 +250,10 @@ mod tests {
         );
         let create2_cid = repo.commit_operation(create2_op).unwrap();
 
-        assert!(repo.latest(&target1).is_some());
-        assert!(repo.latest(&target2).is_some());
-        assert_eq!(repo.latest(&target1).unwrap(), create1_cid);
-        assert_eq!(repo.latest(&target2).unwrap(), create2_cid);
+        assert!(repo.latest(&create1_cid).is_some());
+        assert!(repo.latest(&create2_cid).is_some());
+        assert_eq!(repo.latest(&create1_cid).unwrap(), create1_cid);
+        assert_eq!(repo.latest(&create2_cid).unwrap(), create2_cid);
         assert_ne!(create1_cid, create2_cid);
     }
 }
