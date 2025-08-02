@@ -402,17 +402,17 @@ mod tests {
                 // Create actual nodes for testing
                 if !nodes.contains_key(parent) {
                     let parent_node =
-                        Node::new_genesis(format!("content_{}", parent), 0, BTreeMap::new());
+                        Node::new_genesis(format!("content_{parent}"), 0, BTreeMap::new());
                     nodes.insert(*parent, parent_node);
                 }
 
                 if !nodes.contains_key(child) {
                     let parents = edges.get(child).cloned().unwrap_or_default();
                     let child_node = if parents.is_empty() {
-                        Node::new_genesis(format!("content_{}", child), 0, BTreeMap::new())
+                        Node::new_genesis(format!("content_{child}"), 0, BTreeMap::new())
                     } else {
                         Node::new_child(
-                            format!("content_{}", child),
+                            format!("content_{child}"),
                             parents.clone(),
                             parents[0], // Use first parent as genesis
                             0,
