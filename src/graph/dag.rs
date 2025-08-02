@@ -20,6 +20,7 @@ where
 {
     pub storage: S,
     pub heads: HashMap<String, Cid>,
+    edges_forward: HashMap<Cid, Vec<Cid>>, // parent -> children
     _p_marker: PhantomData<P>,
     _m_marker: PhantomData<M>,
 }
@@ -34,6 +35,7 @@ where
         Self {
             storage,
             heads: HashMap::new(),
+            edges_forward: HashMap::new(),
             _p_marker: PhantomData,
             _m_marker: PhantomData,
         }
@@ -58,7 +60,16 @@ where
         if self.would_create_cycle_with(&new_cid, &parents)? {
             return Err(GraphError::CycleDetected);
         }
+
         self.storage.put(&node)?;
+
+        self.ensure_cache()?;
+        for &parent in &parents {
+            self.edges_forward.entry(parent).or_default().push(new_cid);
+        }
+
+        self.edges_forward.entry(new_cid).or_default();
+
         Ok(new_cid)
     }
 
@@ -69,11 +80,44 @@ where
             .map(|d| d.as_secs())
     }
 
-    /// Check if adding an edge (new node with parents) would create a cycle
-    fn would_create_cycle_with(&self, new_cid: &Cid, parents: &[Cid]) -> Result<bool> {
-        let mut node_map = self.storage.get_node_map()?;
-        node_map.insert(*new_cid, parents.to_vec());
-        Self::detect_cycle_cid(&node_map)
+    fn would_create_cycle_with(&mut self, new_cid: &Cid, parents: &[Cid]) -> Result<bool> {
+        self.ensure_cache()?;
+
+        for &parent in parents {
+            if self.path_exists(parent, *new_cid) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn ensure_cache(&mut self) -> Result<()> {
+        if self.edges_forward.is_empty() {
+            let node_map = self.storage.get_node_map()?;
+            self.edges_forward = Self::build_adjacency_list(&node_map);
+        }
+        Ok(())
+    }
+
+    fn path_exists(&self, start: Cid, target: Cid) -> bool {
+        if start == target {
+            return true;
+        }
+        let mut stack = vec![start];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(node) = stack.pop() {
+            if node == target {
+                return true;
+            }
+            if visited.insert(node) {
+                if let Some(children) = self.edges_forward.get(&node) {
+                    for &child in children {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+        false
     }
 
     pub fn detect_cycle_cid(node_map: &HashMap<Cid, Vec<Cid>>) -> Result<bool> {
@@ -432,18 +476,69 @@ mod tests {
 
     #[test]
     fn test_multiple_heads() {
-        let mut dag =
-            DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(MockStorage::new());
+        let mut storage = MockStorage::new();
         let cid_a = create_test_content_id(b"node_a");
         let cid_b = create_test_content_id(b"node_b");
         let cid_c = create_test_content_id(b"node_c");
+        storage.setup_graph(&[(cid_a, cid_b)]);
+        let mut dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
         dag.set_head(&cid_a, cid_b);
-        dag.set_head(&cid_a, cid_c);
+        dag.set_head(&cid_b, cid_c);
+        let head_a = dag.latest_head(&cid_a).unwrap();
+        let head_b = dag.latest_head(&cid_b).unwrap();
+        assert_eq!(head_a, cid_b);
+        assert_eq!(head_b, cid_c);
+    }
 
-        let head = dag.latest_head(&cid_a);
-        println!("head: {head:?}");
+    // -------------------------------------------------------
+    // Incremental cycle detection / cache validation tests
+    // -------------------------------------------------------
 
-        assert!(head.is_some());
-        assert!(head.unwrap() == cid_c);
+    #[test]
+    fn test_incremental_add_node_no_cycle() {
+        // Existing graph: A -> B
+        let mut storage = MockStorage::new();
+        let cid_a = create_test_content_id(b"node_a");
+        let cid_b = create_test_content_id(b"node_b");
+        storage.setup_graph(&[(cid_a, cid_b)]);
+
+        let mut dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        // Add a new node whose parent is B (should NOT create a cycle)
+        let new_cid = dag
+            .add_node("payload".to_string(), vec![cid_b], ())
+            .expect("add_node should succeed");
+
+        // Verify edges_forward is updated (B -> new_cid)
+        assert!(dag
+            .edges_forward
+            .get(&cid_b)
+            .expect("parent key must exist")
+            .contains(&new_cid));
+    }
+
+    #[test]
+    fn test_incremental_cache_reuse() {
+        // Existing graph: single edge A -> B
+        let mut storage = MockStorage::new();
+        let cid_a = create_test_content_id(b"a");
+        let cid_b = create_test_content_id(b"b");
+        storage.setup_graph(&[(cid_a, cid_b)]);
+
+        let mut dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        // The first add_node call builds the cache
+        let cid1 = dag
+            .add_node("n1".to_string(), vec![cid_b], ())
+            .expect("first add");
+        let cache_size_before = dag.edges_forward.len();
+
+        // The second add_node call reuses the cache
+        let _cid2 = dag
+            .add_node("n2".to_string(), vec![cid1], ())
+            .expect("second add");
+
+        // One extra node -> cache size should increase by exactly 1
+        assert_eq!(cache_size_before + 1, dag.edges_forward.len());
     }
 }
