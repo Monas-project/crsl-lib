@@ -149,6 +149,8 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    type TestDag = DagGraph<MockStorage, String, BTreeMap<String, String>>;
+
     #[derive(Debug)]
     struct MockStorage {
         edges: HashMap<Cid, Vec<Cid>>,
@@ -210,15 +212,14 @@ mod tests {
         let cid_c = create_test_content_id(b"node_c");
         let cid_d = create_test_content_id(b"node_d");
         storage.setup_graph(&[(cid_a, cid_b), (cid_b, cid_c), (cid_c, cid_d)]);
-        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let dag = TestDag::new(storage);
 
         let node_map =
             <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
                 &dag.storage,
             )
             .unwrap();
-        let result =
-            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
+        let result = TestDag::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(!result.unwrap(), "false");
@@ -227,15 +228,14 @@ mod tests {
     #[test]
     fn test_empty_graph_has_acyclic() {
         let storage = MockStorage::new();
-        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let dag = TestDag::new(storage);
 
         let node_map =
             <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
                 &dag.storage,
             )
             .unwrap();
-        let result =
-            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
+        let result = TestDag::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(!result.unwrap(), "false");
@@ -254,15 +254,14 @@ mod tests {
         }
         let edges: Vec<_> = nodes.windows(2).map(|pair| (pair[0], pair[1])).collect();
         storage.setup_graph(&edges);
-        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let dag = TestDag::new(storage);
 
         let node_map =
             <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
                 &dag.storage,
             )
             .unwrap();
-        let result =
-            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
+        let result = TestDag::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(!result.unwrap(), "false");
@@ -294,15 +293,14 @@ mod tests {
             (cid_g, cid_h),
             (cid_h, cid_a),
         ]);
-        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let dag = TestDag::new(storage);
 
         let node_map =
             <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
                 &dag.storage,
             )
             .unwrap();
-        let result =
-            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
+        let result = TestDag::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(!result.unwrap(), "false");
@@ -315,15 +313,14 @@ mod tests {
         let cid_b = create_test_content_id(b"node_b");
         let cid_c = create_test_content_id(b"node_c");
         storage.setup_graph(&[(cid_a, cid_b), (cid_b, cid_c), (cid_c, cid_a)]);
-        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let dag = TestDag::new(storage);
 
         let node_map =
             <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
                 &dag.storage,
             )
             .unwrap();
-        let result =
-            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
+        let result = TestDag::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(result.unwrap(), "true");
@@ -355,15 +352,14 @@ mod tests {
             (cid_i, cid_j),
             (cid_j, cid_a),
         ]);
-        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let dag = TestDag::new(storage);
 
         let node_map =
             <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
                 &dag.storage,
             )
             .unwrap();
-        let result =
-            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
+        let result = TestDag::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(result.unwrap(), "true");
@@ -391,15 +387,14 @@ mod tests {
             (cid_c, cid_e),
             (cid_e, cid_a),
         ]);
-        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let dag = TestDag::new(storage);
 
         let node_map =
             <MockStorage as NodeStorage<String, BTreeMap<String, String>>>::get_node_map(
                 &dag.storage,
             )
             .unwrap();
-        let result =
-            DagGraph::<MockStorage, String, BTreeMap<String, String>>::detect_cycle_cid(&node_map);
+        let result = TestDag::detect_cycle_cid(&node_map);
 
         assert!(result.is_ok());
         assert!(result.unwrap(), "true");
@@ -407,8 +402,7 @@ mod tests {
 
     #[test]
     fn test_latest_head() {
-        let mut dag =
-            DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(MockStorage::new());
+        let mut dag = TestDag::new(MockStorage::new());
         let cid_a = create_test_content_id(b"node_a");
         let cid_b = create_test_content_id(b"node_b");
 
@@ -421,8 +415,7 @@ mod tests {
 
     #[test]
     fn test_empty_latest_head() {
-        let dag =
-            DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(MockStorage::new());
+        let dag = TestDag::new(MockStorage::new());
         let cid_a = create_test_content_id(b"node_a");
 
         let head = dag.latest_head(&cid_a);
@@ -432,8 +425,7 @@ mod tests {
 
     #[test]
     fn test_multiple_heads() {
-        let mut dag =
-            DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(MockStorage::new());
+        let mut dag = TestDag::new(MockStorage::new());
         let cid_a = create_test_content_id(b"node_a");
         let cid_b = create_test_content_id(b"node_b");
         let cid_c = create_test_content_id(b"node_c");
