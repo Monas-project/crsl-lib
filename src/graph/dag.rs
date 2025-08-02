@@ -63,11 +63,11 @@ where
 
         self.storage.put(&node)?;
 
-        self.ensure_cache()?;
+        // Update cache incrementally for the new node
+        self.ensure_subgraph_cached(&parents)?;
         for &parent in &parents {
             self.edges_forward.entry(parent).or_default().push(new_cid);
         }
-
         self.edges_forward.entry(new_cid).or_default();
 
         Ok(new_cid)
@@ -91,6 +91,10 @@ where
 
         self.storage.put(&node)?;
         self.set_head(&cid, cid);
+
+        // Initialize cache entry for genesis node
+        self.edges_forward.entry(cid).or_default();
+
         Ok(cid)
     }
 
@@ -125,6 +129,14 @@ where
 
         self.storage.put(&node)?;
         self.set_head(&genesis, cid);
+
+        // Update cache incrementally for the new node
+        self.ensure_subgraph_cached(&parents)?;
+        for &parent in &parents {
+            self.edges_forward.entry(parent).or_default().push(cid);
+        }
+        self.edges_forward.entry(cid).or_default();
+
         Ok(cid)
     }
 
@@ -137,8 +149,8 @@ where
 
     /// Check if adding an edge (new node with parents) would create a cycle
     fn would_create_cycle_with(&mut self, new_cid: &Cid, parents: &[Cid]) -> Result<bool> {
-        // Ensure cache is populated for efficient path checking
-        self.ensure_cache()?;
+        // Build cache only for the relevant subgraph
+        self.ensure_subgraph_cached(parents)?;
 
         // Quick check: if adding this edge would create a path from any parent back to itself
         for &parent in parents {
@@ -147,20 +159,49 @@ where
             }
         }
 
-        // For more complex scenarios, use the subgraph approach
-        if parents.len() > 1 {
-            let node_map = self.get_subgraph(new_cid, parents)?;
-            return Self::detect_cycle_cid(&node_map);
-        }
-
-        Ok(false)
+        // For all cases, use the subgraph approach for accurate cycle detection
+        // This handles both simple (single parent) and complex (multiple parents) cases
+        let node_map = self.get_subgraph(new_cid, parents)?;
+        Self::detect_cycle_cid(&node_map)
     }
 
-    fn ensure_cache(&mut self) -> Result<()> {
-        if self.edges_forward.is_empty() {
-            let node_map = self.storage.get_node_map()?;
-            self.edges_forward = Self::build_adjacency_list(&node_map);
+    /// Ensure a subgraph is cached for the given parents and their ancestors
+    /// This implements lazy, incremental cache building
+    fn ensure_subgraph_cached(&mut self, parents: &[Cid]) -> Result<()> {
+        let mut to_process = Vec::new();
+
+        // First, check which parents need caching
+        for &parent in parents {
+            if !self.edges_forward.contains_key(&parent) {
+                to_process.push(parent);
+            }
         }
+
+        // Process nodes that aren't cached yet
+        let mut processed = std::collections::HashSet::new();
+        while let Some(current) = to_process.pop() {
+            if processed.contains(&current) || self.edges_forward.contains_key(&current) {
+                continue;
+            }
+            processed.insert(current);
+
+            // Add empty entry for current node
+            self.edges_forward.entry(current).or_default();
+
+            // Get node and process its parents
+            if let Some(node) = self.storage.get(&current)? {
+                for &parent in node.parents() {
+                    // Add edge from parent to current
+                    self.edges_forward.entry(parent).or_default().push(current);
+
+                    // Queue parent for processing if not cached
+                    if !self.edges_forward.contains_key(&parent) {
+                        to_process.push(parent);
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -337,19 +378,47 @@ mod tests {
 
     #[derive(Debug)]
     struct MockStorage {
-        edges: HashMap<Cid, Vec<Cid>>,
+        edges: std::cell::RefCell<HashMap<Cid, Vec<Cid>>>,
+        nodes: std::cell::RefCell<HashMap<Cid, Node<String, BTreeMap<String, String>>>>,
     }
     impl MockStorage {
         fn new() -> Self {
             Self {
-                edges: HashMap::new(),
+                edges: std::cell::RefCell::new(HashMap::new()),
+                nodes: std::cell::RefCell::new(HashMap::new()),
             }
         }
 
         fn setup_graph(&mut self, structure: &[(Cid, Cid)]) {
+            let mut edges = self.edges.borrow_mut();
+            let mut nodes = self.nodes.borrow_mut();
+
             for (parent, child) in structure {
-                self.edges.entry(*child).or_default().push(*parent);
-                self.edges.entry(*parent).or_default();
+                edges.entry(*child).or_default().push(*parent);
+                edges.entry(*parent).or_default();
+
+                // Create actual nodes for testing
+                if !nodes.contains_key(parent) {
+                    let parent_node =
+                        Node::new_genesis(format!("content_{}", parent), 0, BTreeMap::new());
+                    nodes.insert(*parent, parent_node);
+                }
+
+                if !nodes.contains_key(child) {
+                    let parents = edges.get(child).cloned().unwrap_or_default();
+                    let child_node = if parents.is_empty() {
+                        Node::new_genesis(format!("content_{}", child), 0, BTreeMap::new())
+                    } else {
+                        Node::new_child(
+                            format!("content_{}", child),
+                            parents.clone(),
+                            parents[0], // Use first parent as genesis
+                            0,
+                            BTreeMap::new(),
+                        )
+                    };
+                    nodes.insert(*child, child_node);
+                }
             }
         }
     }
@@ -360,7 +429,8 @@ mod tests {
         M: Default + serde::Serialize + serde::de::DeserializeOwned,
     {
         fn get(&self, content_id: &Cid) -> Result<Option<Node<P, M>>> {
-            let parents = self.edges.get(content_id).cloned();
+            let edges = self.edges.borrow();
+            let parents = edges.get(content_id).cloned();
 
             let parents = match parents {
                 Some(p) => p,
@@ -377,7 +447,11 @@ mod tests {
             Ok(Some(node))
         }
 
-        fn put(&self, _node: &Node<P, M>) -> Result<()> {
+        fn put(&self, node: &Node<P, M>) -> Result<()> {
+            let cid = node.content_id()?;
+            let mut edges = self.edges.borrow_mut();
+            // Store in edges for compatibility
+            edges.insert(cid, node.parents().to_vec());
             Ok(())
         }
 
@@ -386,7 +460,7 @@ mod tests {
         }
 
         fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
-            Ok(self.edges.clone())
+            Ok(self.edges.borrow().clone())
         }
     }
 
@@ -715,9 +789,9 @@ mod tests {
 
     #[test]
     fn test_get_genesis_from_genesis_node() {
-        let mut storage = MockStorage::new();
+        let storage = MockStorage::new();
         let genesis_cid = create_test_content_id(b"genesis");
-        storage.edges.entry(genesis_cid).or_default();
+        storage.edges.borrow_mut().entry(genesis_cid).or_default();
         let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
 
         let result = dag.get_genesis(&genesis_cid);
@@ -763,9 +837,9 @@ mod tests {
 
     #[test]
     fn test_get_history_from_version_genesis_only() {
-        let mut storage = MockStorage::new();
+        let storage = MockStorage::new();
         let genesis_cid = create_test_content_id(b"genesis");
-        storage.edges.entry(genesis_cid).or_default();
+        storage.edges.borrow_mut().entry(genesis_cid).or_default();
         let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
 
         let history = dag.get_history_from_version(&genesis_cid).unwrap();
