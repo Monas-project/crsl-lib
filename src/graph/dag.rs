@@ -506,7 +506,7 @@ mod tests {
 
         // Add a new node whose parent is B (should NOT create a cycle)
         let new_cid = dag
-            .add_node("payload".to_string(), vec![cid_b], ())
+            .add_node("payload".to_string(), vec![cid_b], BTreeMap::new())
             .expect("add_node should succeed");
 
         // Verify edges_forward is updated (B -> new_cid)
@@ -529,13 +529,13 @@ mod tests {
 
         // The first add_node call builds the cache
         let cid1 = dag
-            .add_node("n1".to_string(), vec![cid_b], ())
+            .add_node("n1".to_string(), vec![cid_b], BTreeMap::new())
             .expect("first add");
         let cache_size_before = dag.edges_forward.len();
 
         // The second add_node call reuses the cache
         let _cid2 = dag
-            .add_node("n2".to_string(), vec![cid1], ())
+            .add_node("n2".to_string(), vec![cid1], BTreeMap::new())
             .expect("second add");
 
         // One extra node -> cache size should increase by exactly 1
