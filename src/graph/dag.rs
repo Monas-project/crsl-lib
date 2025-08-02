@@ -376,10 +376,12 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    type NodeMap = HashMap<Cid, Node<String, BTreeMap<String, String>>>;
+
     #[derive(Debug)]
     struct MockStorage {
         edges: std::cell::RefCell<HashMap<Cid, Vec<Cid>>>,
-        nodes: std::cell::RefCell<HashMap<Cid, Node<String, BTreeMap<String, String>>>>,
+        nodes: std::cell::RefCell<NodeMap>,
     }
     impl MockStorage {
         fn new() -> Self {
