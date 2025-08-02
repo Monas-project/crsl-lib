@@ -146,13 +146,13 @@ where
                 return Ok(true);
             }
         }
-        
+
         // For more complex scenarios, use the subgraph approach
         if parents.len() > 1 {
             let node_map = self.get_subgraph(new_cid, parents)?;
             return Self::detect_cycle_cid(&node_map);
         }
-        
+
         Ok(false)
     }
 
