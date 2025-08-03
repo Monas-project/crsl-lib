@@ -20,6 +20,7 @@ where
 {
     pub storage: S,
     pub heads: HashMap<String, Cid>,
+    edges_forward: HashMap<Cid, Vec<Cid>>, // parent -> children
     _p_marker: PhantomData<P>,
     _m_marker: PhantomData<M>,
 }
@@ -34,6 +35,7 @@ where
         Self {
             storage,
             heads: HashMap::new(),
+            edges_forward: HashMap::new(),
             _p_marker: PhantomData,
             _m_marker: PhantomData,
         }
@@ -53,13 +55,89 @@ where
     ///
     pub fn add_node(&mut self, payload: P, parents: Vec<Cid>, metadata: M) -> Result<Cid> {
         let timestamp = Self::current_timestamp()?;
-        let node = Node::new(payload, parents.clone(), timestamp, metadata);
-        let new_cid = node.content_id().unwrap();
+        let node = Node::new_genesis(payload, timestamp, metadata);
+        let new_cid = node.content_id()?;
         if self.would_create_cycle_with(&new_cid, &parents)? {
             return Err(GraphError::CycleDetected);
         }
+
         self.storage.put(&node)?;
+
+        // Update cache incrementally for the new node
+        self.ensure_subgraph_cached(&parents)?;
+        for &parent in &parents {
+            self.edges_forward.entry(parent).or_default().push(new_cid);
+        }
+        self.edges_forward.entry(new_cid).or_default();
+
         Ok(new_cid)
+    }
+
+    /// Add a genesis node (first version of content)
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The payload
+    /// * `metadata` - The metadata
+    ///
+    /// # Returns
+    ///
+    /// * `Cid` - The content Id of the new genesis node
+    ///
+    pub fn add_genesis_node(&mut self, payload: P, metadata: M) -> Result<Cid> {
+        let timestamp = Self::current_timestamp()?;
+        let node = Node::new_genesis(payload, timestamp, metadata);
+        let cid = node.content_id()?;
+
+        self.storage.put(&node)?;
+        self.set_head(&cid, cid);
+
+        // Initialize cache entry for genesis node
+        self.edges_forward.entry(cid).or_default();
+
+        Ok(cid)
+    }
+
+    /// Add a version node (subsequent version of content)
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The payload
+    /// * `parents` - The parent content Ids
+    /// * `genesis` - The genesis CID that this node belongs to
+    /// * `metadata` - The metadata
+    ///
+    /// # Returns
+    ///
+    /// * `Cid` - The content Id of the new version node
+    ///
+    pub fn add_version_node(
+        &mut self,
+        payload: P,
+        parents: Vec<Cid>,
+        genesis: Cid,
+        metadata: M,
+    ) -> Result<Cid> {
+        let timestamp = Self::current_timestamp()?;
+        let node = Node::new_child(payload, parents.clone(), genesis, timestamp, metadata);
+        let cid = node.content_id()?;
+
+        // Use optimized genesis-based cycle detection
+        if self.would_create_cycle_with(&cid, &parents)? {
+            return Err(GraphError::CycleDetected);
+        }
+
+        self.storage.put(&node)?;
+        self.set_head(&genesis, cid);
+
+        // Update cache incrementally for the new node
+        self.ensure_subgraph_cached(&parents)?;
+        for &parent in &parents {
+            self.edges_forward.entry(parent).or_default().push(cid);
+        }
+        self.edges_forward.entry(cid).or_default();
+
+        Ok(cid)
     }
 
     fn current_timestamp() -> Result<u64> {
@@ -70,10 +148,108 @@ where
     }
 
     /// Check if adding an edge (new node with parents) would create a cycle
-    fn would_create_cycle_with(&self, new_cid: &Cid, parents: &[Cid]) -> Result<bool> {
-        let mut node_map = self.storage.get_node_map()?;
-        node_map.insert(*new_cid, parents.to_vec());
+    fn would_create_cycle_with(&mut self, new_cid: &Cid, parents: &[Cid]) -> Result<bool> {
+        // Build cache only for the relevant subgraph
+        self.ensure_subgraph_cached(parents)?;
+
+        // Quick check: if adding this edge would create a path from any parent back to itself
+        for &parent in parents {
+            if self.path_exists(parent, *new_cid) {
+                return Ok(true);
+            }
+        }
+
+        // For all cases, use the subgraph approach for accurate cycle detection
+        // This handles both simple (single parent) and complex (multiple parents) cases
+        let node_map = self.get_subgraph(new_cid, parents)?;
         Self::detect_cycle_cid(&node_map)
+    }
+
+    /// Ensure a subgraph is cached for the given parents and their ancestors
+    /// This implements lazy, incremental cache building
+    fn ensure_subgraph_cached(&mut self, parents: &[Cid]) -> Result<()> {
+        let mut to_process = Vec::new();
+
+        // First, check which parents need caching
+        for &parent in parents {
+            if !self.edges_forward.contains_key(&parent) {
+                to_process.push(parent);
+            }
+        }
+
+        // Process nodes that aren't cached yet
+        let mut processed = std::collections::HashSet::new();
+        while let Some(current) = to_process.pop() {
+            if processed.contains(&current) || self.edges_forward.contains_key(&current) {
+                continue;
+            }
+            processed.insert(current);
+
+            // Add empty entry for current node
+            self.edges_forward.entry(current).or_default();
+
+            // Get node and process its parents
+            if let Some(node) = self.storage.get(&current)? {
+                for &parent in node.parents() {
+                    // Add edge from parent to current
+                    self.edges_forward.entry(parent).or_default().push(current);
+
+                    // Queue parent for processing if not cached
+                    if !self.edges_forward.contains_key(&parent) {
+                        to_process.push(parent);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn path_exists(&self, start: Cid, target: Cid) -> bool {
+        if start == target {
+            return true;
+        }
+        let mut stack = vec![start];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(node) = stack.pop() {
+            if node == target {
+                return true;
+            }
+            if visited.insert(node) {
+                if let Some(children) = self.edges_forward.get(&node) {
+                    for &child in children {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Get minimal subgraph needed for cycle detection
+    /// Only collects nodes that could be part of a cycle with the new node
+    fn get_subgraph(&self, new_cid: &Cid, parents: &[Cid]) -> Result<HashMap<Cid, Vec<Cid>>> {
+        let mut node_map = HashMap::new();
+        node_map.insert(*new_cid, parents.to_vec());
+
+        let mut to_process = parents.to_vec();
+        let mut processed = std::collections::HashSet::new();
+
+        while let Some(current_cid) = to_process.pop() {
+            if processed.contains(&current_cid) {
+                continue;
+            }
+            processed.insert(current_cid);
+
+            if let Some(node) = self.storage.get(&current_cid)? {
+                let node_parents = node.parents().to_vec();
+                node_map.insert(current_cid, node_parents.clone());
+
+                to_process.extend(node_parents);
+            }
+        }
+
+        Ok(node_map)
     }
 
     pub fn detect_cycle_cid(node_map: &HashMap<Cid, Vec<Cid>>) -> Result<bool> {
@@ -142,6 +318,57 @@ where
     pub fn set_head(&mut self, content_id: &Cid, head: Cid) {
         self.heads.insert(content_id.to_string(), head);
     }
+
+    /// Get genesis CID from any version CID
+    ///
+    /// # Arguments
+    ///
+    /// * `version_cid` - The version CID to get genesis for
+    ///
+    /// # Returns
+    ///
+    /// * `Cid` - The genesis CID
+    ///
+    pub fn get_genesis(&self, version_cid: &Cid) -> Result<Cid> {
+        match self.storage.get(version_cid)? {
+            Some(node) => match node.genesis {
+                Some(genesis_cid) => Ok(genesis_cid),
+                None => Ok(*version_cid),
+            },
+            None => Err(GraphError::NodeNotFound(*version_cid)),
+        }
+    }
+
+    /// Get history from a specific version
+    ///
+    /// # Arguments
+    ///
+    /// * `version_cid` - The version CID to get history from
+    ///
+    /// # Returns
+    ///
+    /// * `Vec<Cid>` - History from oldest to newest
+    ///
+    pub fn get_history_from_version(&self, version_cid: &Cid) -> Result<Vec<Cid>> {
+        let mut history = vec![];
+        let mut current = *version_cid;
+
+        loop {
+            let node = match self.storage.get(&current)? {
+                Some(node) => node,
+                None => return Err(GraphError::NodeNotFound(current)),
+            };
+            history.push(current);
+
+            if node.parents().is_empty() {
+                break;
+            }
+            current = node.parents()[0];
+        }
+
+        history.reverse();
+        Ok(history)
+    }
 }
 
 #[cfg(test)]
@@ -150,21 +377,51 @@ mod tests {
     use std::collections::BTreeMap;
 
     type TestDag = DagGraph<MockStorage, String, BTreeMap<String, String>>;
+    type MockNodeMap = HashMap<Cid, Node<String, BTreeMap<String, String>>>;
 
     #[derive(Debug)]
     struct MockStorage {
-        edges: HashMap<Cid, Vec<Cid>>,
+        edges: std::cell::RefCell<HashMap<Cid, Vec<Cid>>>,
+        nodes: std::cell::RefCell<MockNodeMap>,
     }
     impl MockStorage {
         fn new() -> Self {
             Self {
-                edges: HashMap::new(),
+                edges: std::cell::RefCell::new(HashMap::new()),
+                nodes: std::cell::RefCell::new(HashMap::new()),
             }
         }
 
         fn setup_graph(&mut self, structure: &[(Cid, Cid)]) {
+            let mut edges = self.edges.borrow_mut();
+            let mut nodes = self.nodes.borrow_mut();
+
             for (parent, child) in structure {
-                self.edges.entry(*child).or_default().push(*parent);
+                edges.entry(*child).or_default().push(*parent);
+                edges.entry(*parent).or_default();
+
+                // Create actual nodes for testing
+                if !nodes.contains_key(parent) {
+                    let parent_node =
+                        Node::new_genesis(format!("content_{parent}"), 0, BTreeMap::new());
+                    nodes.insert(*parent, parent_node);
+                }
+
+                if !nodes.contains_key(child) {
+                    let parents = edges.get(child).cloned().unwrap_or_default();
+                    let child_node = if parents.is_empty() {
+                        Node::new_genesis(format!("content_{child}"), 0, BTreeMap::new())
+                    } else {
+                        Node::new_child(
+                            format!("content_{child}"),
+                            parents.clone(),
+                            parents[0], // Use first parent as genesis
+                            0,
+                            BTreeMap::new(),
+                        )
+                    };
+                    nodes.insert(*child, child_node);
+                }
             }
         }
     }
@@ -175,15 +432,29 @@ mod tests {
         M: Default + serde::Serialize + serde::de::DeserializeOwned,
     {
         fn get(&self, content_id: &Cid) -> Result<Option<Node<P, M>>> {
-            Ok(Some(Node::new(
-                P::default(),
-                self.edges.get(content_id).cloned().unwrap_or_default(),
-                0,
-                M::default(),
-            )))
+            let edges = self.edges.borrow();
+            let parents = edges.get(content_id).cloned();
+
+            let parents = match parents {
+                Some(p) => p,
+                None => return Ok(None),
+            };
+
+            let node = if parents.is_empty() {
+                Node::new_genesis(P::default(), 0, M::default())
+            } else {
+                let genesis_cid = *parents.first().unwrap_or(content_id);
+                Node::new_child(P::default(), parents, genesis_cid, 0, M::default())
+            };
+
+            Ok(Some(node))
         }
 
-        fn put(&self, _node: &Node<P, M>) -> Result<()> {
+        fn put(&self, node: &Node<P, M>) -> Result<()> {
+            let cid = node.content_id()?;
+            let mut edges = self.edges.borrow_mut();
+            // Store in edges for compatibility
+            edges.insert(cid, node.parents().to_vec());
             Ok(())
         }
 
@@ -192,7 +463,7 @@ mod tests {
         }
 
         fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
-            Ok(self.edges.clone())
+            Ok(self.edges.borrow().clone())
         }
     }
 
@@ -414,6 +685,25 @@ mod tests {
     }
 
     #[test]
+    fn test_add_genesis_node() {
+        let mut dag = DagGraph::new(MockStorage::new());
+        let cid = dag.add_genesis_node("test".to_string(), ()).unwrap();
+
+        assert_eq!(dag.latest_head(&cid), Some(cid));
+    }
+
+    #[test]
+    fn test_add_version_node() {
+        let mut dag = DagGraph::new(MockStorage::new());
+        let genesis_cid = dag.add_genesis_node("genesis".to_string(), ()).unwrap();
+        let version_cid = dag
+            .add_version_node("version".to_string(), vec![genesis_cid], genesis_cid, ())
+            .unwrap();
+
+        assert_eq!(dag.latest_head(&genesis_cid), Some(version_cid));
+    }
+
+    #[test]
     fn test_empty_latest_head() {
         let dag = TestDag::new(MockStorage::new());
         let cid_a = create_test_content_id(b"node_a");
@@ -425,17 +715,158 @@ mod tests {
 
     #[test]
     fn test_multiple_heads() {
-        let mut dag = TestDag::new(MockStorage::new());
+        let mut storage = MockStorage::new();
         let cid_a = create_test_content_id(b"node_a");
         let cid_b = create_test_content_id(b"node_b");
         let cid_c = create_test_content_id(b"node_c");
+        storage.setup_graph(&[(cid_a, cid_b)]);
+        let mut dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
         dag.set_head(&cid_a, cid_b);
-        dag.set_head(&cid_a, cid_c);
+        dag.set_head(&cid_b, cid_c);
+        let head_a = dag.latest_head(&cid_a).unwrap();
+        let head_b = dag.latest_head(&cid_b).unwrap();
+        assert_eq!(head_a, cid_b);
+        assert_eq!(head_b, cid_c);
+    }
 
-        let head = dag.latest_head(&cid_a);
-        println!("head: {head:?}");
+    // -------------------------------------------------------
+    // Incremental cycle detection / cache validation tests
+    // -------------------------------------------------------
 
-        assert!(head.is_some());
-        assert!(head.unwrap() == cid_c);
+    #[test]
+    fn test_incremental_add_node_no_cycle() {
+        // Existing graph: A -> B
+        let mut storage = MockStorage::new();
+        let cid_a = create_test_content_id(b"node_a");
+        let cid_b = create_test_content_id(b"node_b");
+        storage.setup_graph(&[(cid_a, cid_b)]);
+
+        let mut dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        // Add a new node whose parent is B (should NOT create a cycle)
+        let new_cid = dag
+            .add_node("payload".to_string(), vec![cid_b], BTreeMap::new())
+            .expect("add_node should succeed");
+
+        // Verify edges_forward is updated (B -> new_cid)
+        assert!(dag
+            .edges_forward
+            .get(&cid_b)
+            .expect("parent key must exist")
+            .contains(&new_cid));
+    }
+
+    #[test]
+    fn test_incremental_cache_reuse() {
+        // Existing graph: single edge A -> B
+        let mut storage = MockStorage::new();
+        let cid_a = create_test_content_id(b"a");
+        let cid_b = create_test_content_id(b"b");
+        storage.setup_graph(&[(cid_a, cid_b)]);
+
+        let mut dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        // The first add_node call builds the cache
+        let cid1 = dag
+            .add_node("n1".to_string(), vec![cid_b], BTreeMap::new())
+            .expect("first add");
+        let cache_size_before = dag.edges_forward.len();
+
+        // The second add_node call reuses the cache
+        let _cid2 = dag
+            .add_node("n2".to_string(), vec![cid1], BTreeMap::new())
+            .expect("second add");
+
+        // One extra node -> cache size should increase by exactly 1
+        assert_eq!(cache_size_before + 1, dag.edges_forward.len());
+    }
+
+    #[test]
+    fn test_get_genesis_from_genesis_node() {
+        let storage = MockStorage::new();
+        let genesis_cid = create_test_content_id(b"genesis");
+        storage.edges.borrow_mut().entry(genesis_cid).or_default();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let result = dag.get_genesis(&genesis_cid);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), genesis_cid);
+    }
+
+    #[test]
+    fn test_get_genesis_from_child_node() {
+        let mut storage = MockStorage::new();
+        let genesis_cid = create_test_content_id(b"genesis");
+        let child_cid = create_test_content_id(b"child");
+        storage.setup_graph(&[(genesis_cid, child_cid)]);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let result = dag.get_genesis(&child_cid);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), genesis_cid);
+    }
+
+    #[test]
+    fn test_get_genesis_node_not_found() {
+        let storage = MockStorage::new();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let non_existent_cid = create_test_content_id(b"non_existent");
+
+        let result = dag.get_genesis(&non_existent_cid);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_history_from_version_simple_path() {
+        let mut storage = MockStorage::new();
+        let cid_a = create_test_content_id(b"node_a");
+        let cid_b = create_test_content_id(b"node_b");
+        let cid_c = create_test_content_id(b"node_c");
+        storage.setup_graph(&[(cid_a, cid_b), (cid_b, cid_c)]);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let history = dag.get_history_from_version(&cid_c).unwrap();
+        assert_eq!(history, vec![cid_a, cid_b, cid_c]);
+    }
+
+    #[test]
+    fn test_get_history_from_version_genesis_only() {
+        let storage = MockStorage::new();
+        let genesis_cid = create_test_content_id(b"genesis");
+        storage.edges.borrow_mut().entry(genesis_cid).or_default();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let history = dag.get_history_from_version(&genesis_cid).unwrap();
+        assert_eq!(history, vec![genesis_cid]);
+    }
+
+    #[test]
+    fn test_get_history_from_version_long_path() {
+        let mut storage = MockStorage::new();
+        let cid_a = create_test_content_id(b"node_a");
+        let cid_b = create_test_content_id(b"node_b");
+        let cid_c = create_test_content_id(b"node_c");
+        let cid_d = create_test_content_id(b"node_d");
+        let cid_e = create_test_content_id(b"node_e");
+        storage.setup_graph(&[
+            (cid_a, cid_b),
+            (cid_b, cid_c),
+            (cid_c, cid_d),
+            (cid_d, cid_e),
+        ]);
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+
+        let history = dag.get_history_from_version(&cid_e).unwrap();
+        assert_eq!(history, vec![cid_a, cid_b, cid_c, cid_d, cid_e]);
+    }
+
+    #[test]
+    fn test_get_history_from_version_node_not_found() {
+        let storage = MockStorage::new();
+        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
+        let non_existent_cid = create_test_content_id(b"non_existent");
+
+        let result = dag.get_history_from_version(&non_existent_cid);
+        assert!(result.is_err());
     }
 }

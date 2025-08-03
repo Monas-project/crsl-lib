@@ -1,3 +1,4 @@
+use crate::graph::error::GraphError;
 use bincode::error::{DecodeError, EncodeError};
 use rusty_leveldb::Status as LeveldbError;
 use thiserror::Error;
@@ -16,6 +17,9 @@ pub enum CrdtError {
 
     #[error("validation error: {0}")]
     Validation(#[from] ValidationError),
+
+    #[error("graph error: {0}")]
+    Graph(#[from] GraphError),
 
     #[error("internal error: {0}")]
     Internal(String),
