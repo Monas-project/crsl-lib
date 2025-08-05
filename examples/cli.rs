@@ -127,17 +127,63 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Commands::Show { content_id } => {
                     let cid = Cid::try_from(content_id.as_str())?;
 
-                    match repo.state.get_state(&cid) {
+                    // First try to get content from CRDT state
+                    let content = repo.state.get_state(&cid);
+
+                    // Determine the genesis ID
+                    let genesis_cid = if content.is_some() {
+                        cid // Content ID is the genesis for CRDT-managed content
+                    } else {
+                        // For DAG-only nodes, get the genesis from the DAG
+                        match repo.get_genesis(&cid) {
+                            Ok(genesis) => genesis,
+                            Err(_) => cid, // Fallback to CID if genesis lookup fails
+                        }
+                    };
+
+                    match content {
                         Some(content) => {
                             println!("📄 Content details:");
                             println!("   Content ID: {content_id}");
                             println!("   Content: {content}");
-                            if let Some(latest_version) = repo.latest(&cid) {
-                                println!("   Latest version: {latest_version}");
+                            println!("   Genesis: {genesis_cid}");
+
+                            // Show relationship between requested and latest version
+                            if cid != genesis_cid {
+                                println!("   Requested version: {cid} (child of genesis)");
+                            } else {
+                                println!("   Requested version: {cid} (genesis)");
+                            }
+
+                            // Get and display latest version
+                            if let Some(latest_version) = repo.latest(&genesis_cid) {
+                                if latest_version == cid {
+                                    println!("   Latest version: {latest_version} ✅ (this is the latest)");
+                                } else {
+                                    println!("   Latest version: {latest_version} ⚠️  (this is not the latest)");
+                                }
+                            } else {
+                                println!("   Latest version: Not found");
                             }
                         }
                         None => {
-                            println!("❌ Content not found: {content_id}");
+                            // Content not found in CRDT state, but might exist in DAG
+                            println!("📄 Content details:");
+                            println!("   Content ID: {content_id}");
+                            println!("   Content: Not found in CRDT state");
+                            println!("   Genesis: {genesis_cid}");
+                            println!("   Requested version: {cid} (DAG-only node)");
+
+                            // Try to get latest version from DAG
+                            if let Some(latest_version) = repo.latest(&genesis_cid) {
+                                if latest_version == cid {
+                                    println!("   Latest version: {latest_version} ✅ (this is the latest)");
+                                } else {
+                                    println!("   Latest version: {latest_version} ⚠️  (this is not the latest)");
+                                }
+                            } else {
+                                println!("   Latest version: Not found");
+                            }
                         }
                     }
                 }

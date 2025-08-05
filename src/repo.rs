@@ -39,29 +39,25 @@ where
         self.state.apply(op.clone())?;
 
         let cid = match &op.kind {
-            OperationType::Create(payload) => {
-                let genesis_cid = self.dag.add_genesis_node(payload.clone(), ())?;
-                self.dag.set_head(&genesis_cid, genesis_cid);
-                genesis_cid
-            }
+            OperationType::Create(payload) => self.dag.add_genesis_node(payload.clone(), ())?,
             OperationType::Update(payload) => {
                 let parents = self
                     .dag
-                    .latest_head(&op.genesis)
+                    .calculate_latest(&op.genesis)
+                    .ok()
+                    .flatten()
                     .map(|head| vec![head])
                     .unwrap_or_default();
 
-                let version_cid =
-                    self.dag
-                        .add_version_node(payload.clone(), parents, op.genesis, ())?;
-
-                self.dag.set_head(&op.genesis, version_cid);
-                version_cid
+                self.dag
+                    .add_version_node(payload.clone(), parents, op.genesis, ())?
             }
             OperationType::Delete => {
                 let parents = self
                     .dag
-                    .latest_head(&op.genesis)
+                    .calculate_latest(&op.genesis)
+                    .ok()
+                    .flatten()
                     .map(|head| vec![head])
                     .unwrap_or_default();
 
@@ -70,19 +66,16 @@ where
                     .get_state(&op.target)
                     .expect("content must exist for delete operation");
 
-                let version_cid =
-                    self.dag
-                        .add_version_node(last_payload, parents, op.genesis, ())?;
-                self.dag.set_head(&op.genesis, version_cid);
-                version_cid
+                self.dag
+                    .add_version_node(last_payload, parents, op.genesis, ())?
             }
         };
 
         Ok(cid)
     }
 
-    pub fn latest(&self, target: &Cid) -> Option<Cid> {
-        self.dag.latest_head(target)
+    pub fn latest(&self, genesis_id: &Cid) -> Option<Cid> {
+        self.dag.calculate_latest(genesis_id).ok().flatten()
     }
 
     /// Get the complete history from genesis
