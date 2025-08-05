@@ -130,13 +130,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                     // First try to get content from CRDT state
                     let content = repo.state.get_state(&cid);
 
-                    // Determine the genesis ID - if content exists, use it as genesis
-                    // If not, try to use the CID directly as genesis (for DAG-only nodes)
+                    // Determine the genesis ID
                     let genesis_cid = if content.is_some() {
                         cid // Content ID is the genesis for CRDT-managed content
                     } else {
-                        // Try to use the CID directly as genesis (for DAG-only nodes)
-                        cid
+                        // For DAG-only nodes, get the genesis from the DAG
+                        match repo.get_genesis(&cid) {
+                            Ok(genesis) => genesis,
+                            Err(_) => cid, // Fallback to CID if genesis lookup fails
+                        }
                     };
 
                     match content {
