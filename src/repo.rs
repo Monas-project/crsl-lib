@@ -249,4 +249,80 @@ mod tests {
         assert_eq!(repo.latest(&create2_cid).unwrap(), create2_cid);
         assert_ne!(create1_cid, create2_cid);
     }
+
+    #[test]
+    fn test_update_keeps_series_isolated() {
+        let (mut repo, _) = setup_test_repo();
+        let shared_target = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"update_shared").unwrap(),
+        );
+
+        // Series A
+        let create_a = make_test_operation(
+            shared_target,
+            OperationType::Create(TestPayload("A1".into())),
+        );
+        let genesis_a = repo.commit_operation(create_a).unwrap();
+
+        // Series B
+        let create_b = make_test_operation(
+            shared_target,
+            OperationType::Create(TestPayload("B1".into())),
+        );
+        let genesis_b = repo.commit_operation(create_b).unwrap();
+
+        // Update only series A
+        let update_a = make_test_operation_with_genesis(
+            shared_target,
+            genesis_a,
+            OperationType::Update(TestPayload("A2".into())),
+        );
+        let latest_a = repo.commit_operation(update_a).unwrap();
+
+        // 確認: series A の latest は更新され、series B は変わらない
+        assert_eq!(repo.latest(&genesis_a).unwrap(), latest_a);
+        assert_eq!(repo.latest(&genesis_b).unwrap(), genesis_b);
+    }
+
+    /// Failing test: Delete on one series still uses `target` and may fetch wrong payload.
+    #[test]
+    fn test_delete_mixes_series_due_to_target_lookup() {
+        let (mut repo, _) = setup_test_repo();
+        let shared_target = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"shared").unwrap(),
+        );
+
+        // User1: Create
+        let create1 = make_test_operation(
+            shared_target,
+            OperationType::Create(TestPayload("u1".into())),
+        );
+        let cid1 = repo.commit_operation(create1).unwrap();
+
+        // User2: parallel series
+        let create2 = make_test_operation(
+            shared_target,
+            OperationType::Create(TestPayload("u2".into())),
+        );
+        let cid2 = repo.commit_operation(create2).unwrap();
+
+        // User2 update in its own series
+        let update2 = make_test_operation_with_genesis(
+            shared_target,
+            cid2,
+            OperationType::Update(TestPayload("u2_updated".into())),
+        );
+        repo.commit_operation(update2).unwrap();
+
+        // User1 delete
+        let del_op = make_test_operation_with_genesis(shared_target, cid1, OperationType::Delete);
+        repo.commit_operation(del_op).unwrap();
+
+        assert_eq!(
+            repo.state.get_state(&shared_target),
+            Some(TestPayload("u2_updated".into()))
+        );
+    }
 }

@@ -219,4 +219,42 @@ mod tests {
             Some(DummyPayload("B".to_string()))
         );
     }
+
+    /// This test demonstrates an edge-case where two different genesis IDs share the same
+    /// `target`.  The update with a different genesis is **ignored** by `get_state`, which
+    /// filters by `op.genesis == content_id`.  The correct behaviour from a user perspective
+    /// would be to see the latest payload ("B") but the current implementation wrongly keeps
+    /// the older payload ("A").  The assertion therefore fails and captures the bug.
+    #[test]
+    fn test_same_target_different_genesis_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path())
+                .unwrap();
+        let state: CrdtState<DummyContentId, DummyPayload, _, LwwReducer> = CrdtState::new(storage);
+
+        // Create operation with target "X" (genesis = target)
+        let create = Operation::new(
+            DummyContentId("X".into()),
+            OperationType::Create(DummyPayload("A".into())),
+            "u1".into(),
+        );
+        state.apply(create.clone()).unwrap();
+
+        // Simulate an update coming from another genesis (different series) but same target.
+        let fake_genesis = DummyContentId("DIFFERENT".into());
+        let update = Operation::new_with_genesis(
+            DummyContentId("X".into()),
+            fake_genesis,
+            OperationType::Update(DummyPayload("B".into())),
+            "u1".into(),
+        );
+        state.apply(update).unwrap();
+
+        // Expect "B" but will actually be "A", hence should panic.
+        assert_eq!(
+            state.get_state(&DummyContentId("X".into())),
+            Some(DummyPayload("B".into()))
+        );
+    }
 }
