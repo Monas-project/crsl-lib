@@ -249,4 +249,47 @@ mod tests {
         assert_eq!(repo.latest(&create2_cid).unwrap(), create2_cid);
         assert_ne!(create1_cid, create2_cid);
     }
+
+    /// Failing test: Delete on one series still uses `target` and may fetch wrong payload.
+    #[test]
+    fn test_delete_mixes_series_due_to_target_lookup() {
+        let (mut repo, _) = setup_test_repo();
+        // 共有 Target CID
+        let shared_target = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"shared").unwrap(),
+        );
+
+        // User1: Create (genesis = shared_target)
+        let create1 = make_test_operation(
+            shared_target,
+            OperationType::Create(TestPayload("u1".into())),
+        );
+        let cid1 = repo.commit_operation(create1).unwrap();
+
+        // User2: Create 自分用の genesis を得る
+        let create2 = make_test_operation(
+            shared_target,
+            OperationType::Create(TestPayload("u2".into())),
+        );
+        let cid2 = repo.commit_operation(create2).unwrap();
+
+        // User2: Update with *different genesis* (cid2)
+        let update2 = make_test_operation_with_genesis(
+            shared_target,
+            cid2,
+            OperationType::Update(TestPayload("u2_updated".into())),
+        );
+        repo.commit_operation(update2).unwrap();
+
+        // User1: Delete (uses get_state(&target) internally)
+        let del_op = make_test_operation_with_genesis(shared_target, cid1, OperationType::Delete);
+        repo.commit_operation(del_op).unwrap();
+
+        // 期待: 最新状態は "u2_updated" だが、実装は "u2" を参照するためパニック
+        assert_eq!(
+            repo.state.get_state(&shared_target),
+            Some(TestPayload("u2_updated".into()))
+        );
+    }
 }

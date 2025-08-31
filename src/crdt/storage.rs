@@ -220,4 +220,32 @@ mod tests {
         assert!(ops.contains(&op1));
         assert!(ops.contains(&op2));
     }
+
+    /// Demonstrates that an Update with different genesis is **not** returned when querying by target.
+    #[test]
+    fn test_same_target_different_genesis_ignored() {
+        let (storage, _dir) = setup_test_storage();
+        let target = DummyContentId("shared".into());
+        let payload = DummyPayload("one".into());
+        // Create (genesis = target)
+        let create = Operation::new(
+            target.clone(),
+            OperationType::Create(payload.clone()),
+            "u1".into(),
+        );
+        storage.save_operation(&create).unwrap();
+
+        // Update with DIFFERENT genesis but same target
+        let update = Operation::new_with_genesis(
+            target.clone(),
+            DummyContentId("DIFF".into()),
+            OperationType::Update(DummyPayload("two".into())),
+            "u1".into(),
+        );
+        storage.save_operation(&update).unwrap();
+
+        let ops = storage.load_operations(&target).unwrap();
+        // Expect 2 operations but will get only 1, hence panic.
+        assert_eq!(ops.len(), 2);
+    }
 }
