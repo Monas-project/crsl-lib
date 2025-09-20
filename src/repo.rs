@@ -36,11 +36,14 @@ where
     }
 
     pub fn commit_operation(&mut self, op: Operation<Cid, Payload>) -> Result<Cid> {
-        self.state.apply(op.clone())?;
-
         let cid = match &op.kind {
-            OperationType::Create(payload) => self.dag.add_genesis_node(payload.clone(), ())?,
+            OperationType::Create(payload) => {
+                self.state.apply(op.clone())?;
+                self.dag.add_genesis_node(payload.clone(), ())?
+            }
             OperationType::Update(payload) => {
+                self.state.apply(op.clone())?;
+
                 let parents = self
                     .dag
                     .calculate_latest(&op.genesis)
@@ -53,6 +56,11 @@ where
                     .add_version_node(payload.clone(), parents, op.genesis, ())?
             }
             OperationType::Delete => {
+                let last_payload = self
+                    .state
+                    .get_state(&op.target)
+                    .expect("content must exist for delete operation");
+
                 let parents = self
                     .dag
                     .calculate_latest(&op.genesis)
@@ -61,13 +69,13 @@ where
                     .map(|head| vec![head])
                     .unwrap_or_default();
 
-                let last_payload = self
-                    .state
-                    .get_state(&op.target)
-                    .expect("content must exist for delete operation");
+                let cid = self
+                    .dag
+                    .add_version_node(last_payload, parents, op.genesis, ())?;
 
-                self.dag
-                    .add_version_node(last_payload, parents, op.genesis, ())?
+                self.state.apply(op.clone())?;
+
+                cid
             }
         };
 
@@ -295,34 +303,38 @@ mod tests {
         );
 
         // User1: Create
-        let create1 = make_test_operation(
+        let mut create1 = make_test_operation(
             shared_target,
             OperationType::Create(TestPayload("u1".into())),
         );
+        create1.timestamp = 1000;
         let cid1 = repo.commit_operation(create1).unwrap();
 
         // User2: parallel series
-        let create2 = make_test_operation(
+        let mut create2 = make_test_operation_with_genesis(
             shared_target,
+            Cid::new_v1(
+                0x55,
+                multihash::Multihash::<64>::wrap(0x12, b"user2").unwrap(),
+            ),
             OperationType::Create(TestPayload("u2".into())),
         );
+        create2.timestamp = 2000;
         let cid2 = repo.commit_operation(create2).unwrap();
 
         // User2 update in its own series
-        let update2 = make_test_operation_with_genesis(
+        let mut update2 = make_test_operation_with_genesis(
             shared_target,
             cid2,
             OperationType::Update(TestPayload("u2_updated".into())),
         );
+        update2.timestamp = 3000;
         repo.commit_operation(update2).unwrap();
 
         // User1 delete
         let del_op = make_test_operation_with_genesis(shared_target, cid1, OperationType::Delete);
         repo.commit_operation(del_op).unwrap();
 
-        assert_eq!(
-            repo.state.get_state(&shared_target),
-            Some(TestPayload("u2_updated".into()))
-        );
+        assert_eq!(repo.state.get_state(&shared_target), None);
     }
 }

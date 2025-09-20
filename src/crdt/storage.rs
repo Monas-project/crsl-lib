@@ -69,7 +69,7 @@ where
                 &value,
                 bincode::config::standard(),
             ) {
-                if op.genesis == *content_id {
+                if op.target == *content_id {
                     result.push(op);
                 }
             }
@@ -197,8 +197,8 @@ mod tests {
             author.clone(),
         );
         let op2 = Operation::new_with_genesis(
-            target2.clone(),
             target.clone(),
+            target2.clone(),
             OperationType::Update(payload.clone()),
             author.clone(),
         );

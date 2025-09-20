@@ -234,21 +234,23 @@ mod tests {
         let state: CrdtState<DummyContentId, DummyPayload, _, LwwReducer> = CrdtState::new(storage);
 
         // Create operation with target "X" (genesis = target)
-        let create = Operation::new(
+        let mut create = Operation::new(
             DummyContentId("X".into()),
             OperationType::Create(DummyPayload("A".into())),
             "u1".into(),
         );
+        create.timestamp = 1000;
         state.apply(create.clone()).unwrap();
 
         // Simulate an update coming from another genesis (different series) but same target.
         let fake_genesis = DummyContentId("DIFFERENT".into());
-        let update = Operation::new_with_genesis(
+        let mut update = Operation::new_with_genesis(
             DummyContentId("X".into()),
             fake_genesis,
             OperationType::Update(DummyPayload("B".into())),
             "u1".into(),
         );
+        update.timestamp = 2000;
         state.apply(update).unwrap();
 
         // Expect "B" but will actually be "A", hence should panic.
