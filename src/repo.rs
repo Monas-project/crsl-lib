@@ -36,6 +36,13 @@ where
     }
 
     pub fn commit_operation(&mut self, op: Operation<Cid, Payload>) -> Result<Cid> {
+        // For delete operations, get the state before applying the operation
+        let last_payload_for_delete = if matches!(op.kind, OperationType::Delete) {
+            self.state.get_state_for_genesis(&op.genesis, &op.target)
+        } else {
+            None
+        };
+
         self.state.apply(op.clone())?;
 
         let cid = match &op.kind {
@@ -61,9 +68,7 @@ where
                     .map(|head| vec![head])
                     .unwrap_or_default();
 
-                let last_payload = self
-                    .state
-                    .get_state(&op.target)
+                let last_payload = last_payload_for_delete
                     .expect("content must exist for delete operation");
 
                 self.dag
@@ -211,11 +216,11 @@ mod tests {
         );
         let create_cid = repo.commit_operation(create_op).unwrap();
 
-        let delete_op = make_test_operation_with_genesis(target, create_cid, OperationType::Delete);
+        let delete_op = make_test_operation_with_genesis(target, target, OperationType::Delete);
         let delete_cid = repo.commit_operation(delete_op).unwrap();
 
-        assert!(repo.latest(&create_cid).is_some());
-        assert_eq!(repo.latest(&create_cid).unwrap(), delete_cid);
+        assert!(repo.latest(&target).is_some());
+        assert_eq!(repo.latest(&target).unwrap(), delete_cid);
         assert_ne!(create_cid, delete_cid);
     }
 
@@ -293,36 +298,209 @@ mod tests {
             0x55,
             multihash::Multihash::<64>::wrap(0x12, b"shared").unwrap(),
         );
+        let genesis1 = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"genesis1").unwrap(),
+        );
+        let genesis2 = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"genesis2").unwrap(),
+        );
 
-        // User1: Create
-        let create1 = make_test_operation(
+        // User1: Create in series 1
+        let create1 = Operation::new_with_genesis(
             shared_target,
+            genesis1,
             OperationType::Create(TestPayload("u1".into())),
+            "user1".to_string(),
         );
-        let cid1 = repo.commit_operation(create1).unwrap();
+        let _cid1 = repo.commit_operation(create1).unwrap();
 
-        // User2: parallel series
-        let create2 = make_test_operation(
+        // User2: Create in series 2 (different genesis, same target)
+        let create2 = Operation::new_with_genesis(
             shared_target,
+            genesis2,
             OperationType::Create(TestPayload("u2".into())),
+            "user2".to_string(),
         );
-        let cid2 = repo.commit_operation(create2).unwrap();
+        let _cid2 = repo.commit_operation(create2).unwrap();
 
-        // User2 update in its own series
-        let update2 = make_test_operation_with_genesis(
+        // User1 delete in series 1 (make it happen first)
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let del_op = Operation::new_with_genesis(
             shared_target,
-            cid2,
+            genesis1,
+            OperationType::Delete,
+            "user1".to_string(),
+        );
+        repo.commit_operation(del_op).unwrap();
+
+        // User2 update in series 2 (make it happen after delete)
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let update2 = Operation::new_with_genesis(
+            shared_target,
+            genesis2,
             OperationType::Update(TestPayload("u2_updated".into())),
+            "user2".to_string(),
         );
         repo.commit_operation(update2).unwrap();
 
-        // User1 delete
-        let del_op = make_test_operation_with_genesis(shared_target, cid1, OperationType::Delete);
-        repo.commit_operation(del_op).unwrap();
-
+        // After deletion in series 1, series 2 should still be visible
+        // The state should show the latest update from series 2
         assert_eq!(
             repo.state.get_state(&shared_target),
             Some(TestPayload("u2_updated".into()))
+        );
+    }
+
+    #[test]
+    fn test_concurrent_operations_same_target_different_genesis() {
+        let (mut repo, _) = setup_test_repo();
+        let shared_target = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"concurrent").unwrap(),
+        );
+        let genesis1 = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"gen1").unwrap(),
+        );
+        let genesis2 = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"gen2").unwrap(),
+        );
+
+        // Create operations in parallel series
+        let create1 = Operation::new_with_genesis(
+            shared_target,
+            genesis1,
+            OperationType::Create(TestPayload("series1_v1".into())),
+            "user1".to_string(),
+        );
+        repo.commit_operation(create1).unwrap();
+
+        let create2 = Operation::new_with_genesis(
+            shared_target,
+            genesis2,
+            OperationType::Create(TestPayload("series2_v1".into())),
+            "user2".to_string(),
+        );
+        repo.commit_operation(create2).unwrap();
+
+        // Multiple updates in both series
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let update1 = Operation::new_with_genesis(
+            shared_target,
+            genesis1,
+            OperationType::Update(TestPayload("series1_v2".into())),
+            "user1".to_string(),
+        );
+        repo.commit_operation(update1).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let update2 = Operation::new_with_genesis(
+            shared_target,
+            genesis2,
+            OperationType::Update(TestPayload("series2_v2".into())),
+            "user2".to_string(),
+        );
+        repo.commit_operation(update2).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let update3 = Operation::new_with_genesis(
+            shared_target,
+            genesis1,
+            OperationType::Update(TestPayload("series1_v3".into())),
+            "user1".to_string(),
+        );
+        repo.commit_operation(update3).unwrap();
+
+        // The global state should reflect the latest operation
+        assert_eq!(
+            repo.state.get_state(&shared_target),
+            Some(TestPayload("series1_v3".into()))
+        );
+
+        // Each genesis should have its own state
+        assert_eq!(
+            repo.state.get_state_for_genesis(&genesis1, &shared_target),
+            Some(TestPayload("series1_v3".into()))
+        );
+        assert_eq!(
+            repo.state.get_state_for_genesis(&genesis2, &shared_target),
+            Some(TestPayload("series2_v2".into()))
+        );
+    }
+
+    #[test]
+    fn test_delete_in_one_series_preserves_other() {
+        let (mut repo, _) = setup_test_repo();
+        let shared_target = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"delete_test").unwrap(),
+        );
+        let genesis1 = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"g1").unwrap(),
+        );
+        let genesis2 = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"g2").unwrap(),
+        );
+
+        // Create in both series
+        let create1 = Operation::new_with_genesis(
+            shared_target,
+            genesis1,
+            OperationType::Create(TestPayload("data1".into())),
+            "u1".to_string(),
+        );
+        repo.commit_operation(create1).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let create2 = Operation::new_with_genesis(
+            shared_target,
+            genesis2,
+            OperationType::Create(TestPayload("data2".into())),
+            "u2".to_string(),
+        );
+        repo.commit_operation(create2).unwrap();
+
+        // Delete in series 1
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let delete1 = Operation::new_with_genesis(
+            shared_target,
+            genesis1,
+            OperationType::Delete,
+            "u1".to_string(),
+        );
+        repo.commit_operation(delete1).unwrap();
+
+        // Update in series 2 after delete
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let update2 = Operation::new_with_genesis(
+            shared_target,
+            genesis2,
+            OperationType::Update(TestPayload("data2_updated".into())),
+            "u2".to_string(),
+        );
+        repo.commit_operation(update2).unwrap();
+
+        // Series 1 should be deleted
+        assert_eq!(
+            repo.state.get_state_for_genesis(&genesis1, &shared_target),
+            None
+        );
+
+        // Series 2 should still exist with updated value
+        assert_eq!(
+            repo.state.get_state_for_genesis(&genesis2, &shared_target),
+            Some(TestPayload("data2_updated".into()))
+        );
+
+        // Global state should show series 2 update (happened after delete)
+        assert_eq!(
+            repo.state.get_state(&shared_target),
+            Some(TestPayload("data2_updated".into()))
         );
     }
 }
