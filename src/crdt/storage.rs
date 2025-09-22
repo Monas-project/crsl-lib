@@ -9,7 +9,15 @@ use ulid::Ulid;
 
 pub trait OperationStorage<ContentId, T> {
     fn save_operation(&self, op: &Operation<ContentId, T>) -> Result<()>;
-    fn load_operations(&self, content_id: &ContentId) -> Result<Vec<Operation<ContentId, T>>>;
+    fn load_operations(
+        &self,
+        target: &ContentId,
+        genesis: &ContentId,
+    ) -> Result<Vec<Operation<ContentId, T>>>;
+    fn load_operations_by_genesis(
+        &self,
+        genesis: &ContentId,
+    ) -> Result<Vec<Operation<ContentId, T>>>;
     fn get_operation(&self, op_id: &Ulid) -> Result<Option<Operation<ContentId, T>>>;
 }
 
@@ -51,7 +59,11 @@ where
         Ok(())
     }
 
-    fn load_operations(&self, content_id: &ContentId) -> Result<Vec<Operation<ContentId, T>>> {
+    fn load_operations(
+        &self,
+        target: &ContentId,
+        genesis: &ContentId,
+    ) -> Result<Vec<Operation<ContentId, T>>> {
         let mut result = Vec::new();
         let mut iter = self
             .db
@@ -69,7 +81,37 @@ where
                 &value,
                 bincode::config::standard(),
             ) {
-                if op.genesis == *content_id {
+                if op.target == *target && op.genesis == *genesis {
+                    result.push(op);
+                }
+            }
+            iter.advance();
+        }
+
+        Ok(result)
+    }
+
+    fn load_operations_by_genesis(
+        &self,
+        genesis: &ContentId,
+    ) -> Result<Vec<Operation<ContentId, T>>> {
+        let mut result = Vec::new();
+        let mut iter = self
+            .db
+            .borrow_mut()
+            .new_iter()
+            .map_err(CrdtError::Storage)?;
+        iter.seek_to_first();
+        let mut key = Vec::new();
+        let mut value = Vec::new();
+
+        while iter.valid() {
+            iter.current(&mut key, &mut value);
+            if let Ok((op, _)) = bincode::serde::decode_from_slice::<Operation<ContentId, T>, _>(
+                &value,
+                bincode::config::standard(),
+            ) {
+                if op.genesis == *genesis {
                     result.push(op);
                 }
             }
@@ -212,13 +254,12 @@ mod tests {
         storage.save_operation(&op2).unwrap();
         storage.save_operation(&op3).unwrap();
 
-        let retrieved_ops = storage.load_operations(&target);
+        let retrieved_ops = storage.load_operations(&target, &target);
 
         assert!(retrieved_ops.is_ok());
         let ops = retrieved_ops.unwrap();
-        assert_eq!(ops.len(), 2);
+        assert_eq!(ops.len(), 1);
         assert!(ops.contains(&op1));
-        assert!(ops.contains(&op2));
     }
 
     /// Demonstrates that an Update with different genesis is **not** returned when querying by target.
@@ -244,8 +285,9 @@ mod tests {
         );
         storage.save_operation(&update).unwrap();
 
-        let ops = storage.load_operations(&target).unwrap();
-        // Expect 2 operations but will get only 1, hence panic.
-        assert_eq!(ops.len(), 2);
+        let ops = storage.load_operations(&target, &target).unwrap();
+        // Should only get operations with matching genesis
+        assert_eq!(ops.len(), 1);
+        assert!(ops.contains(&create));
     }
 }

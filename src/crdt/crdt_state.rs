@@ -72,9 +72,16 @@ where
             )))
         }
     }
-    pub fn get_state(&self, content_id: &ContentId) -> Option<T> {
-        let ops = self.storage.load_operations(content_id).ok()?;
+    pub fn get_state(&self, target: &ContentId, genesis: &ContentId) -> Option<T> {
+        let ops = self.storage.load_operations(target, genesis).ok()?;
         R::reduce(&ops)
+    }
+
+    pub fn get_operations_by_genesis(
+        &self,
+        genesis: &ContentId,
+    ) -> Result<Vec<Operation<ContentId, T>>> {
+        self.storage.load_operations_by_genesis(genesis)
     }
 
     /// Validates whether an operation is logically valid to apply.
@@ -94,7 +101,7 @@ where
     pub fn validate_operation(&self, op: &Operation<ContentId, T>) -> Result<bool> {
         match &op.kind {
             OperationType::Update(_) | OperationType::Delete => {
-                let ops = self.storage.load_operations(&op.target)?;
+                let ops = self.storage.load_operations(&op.target, &op.genesis)?;
                 Ok(ops
                     .iter()
                     .any(|o| matches!(o.kind, OperationType::Create(_))))
@@ -144,7 +151,10 @@ mod tests {
         state.apply(op).unwrap();
 
         assert_eq!(
-            state.get_state(&DummyContentId("1".to_string())),
+            state.get_state(
+                &DummyContentId("1".to_string()),
+                &DummyContentId("1".to_string())
+            ),
             Some(DummyPayload("A".to_string()))
         );
     }
@@ -163,7 +173,10 @@ mod tests {
         state.apply(op2).unwrap();
 
         assert_eq!(
-            state.get_state(&DummyContentId("1".to_string())),
+            state.get_state(
+                &DummyContentId("1".to_string()),
+                &DummyContentId("1".to_string())
+            ),
             Some(DummyPayload("B".to_string()))
         );
     }
@@ -182,7 +195,13 @@ mod tests {
         state.apply(op1).unwrap();
         state.apply(op2).unwrap();
         state.apply(op3).unwrap();
-        assert_eq!(state.get_state(&DummyContentId("1".to_string())), None);
+        assert_eq!(
+            state.get_state(
+                &DummyContentId("1".to_string()),
+                &DummyContentId("1".to_string())
+            ),
+            None
+        );
     }
 
     #[test]
@@ -215,7 +234,10 @@ mod tests {
         state.apply_with_validation(op2).unwrap();
 
         assert_eq!(
-            state.get_state(&DummyContentId("1".to_string())),
+            state.get_state(
+                &DummyContentId("1".to_string()),
+                &DummyContentId("1".to_string())
+            ),
             Some(DummyPayload("B".to_string()))
         );
     }
@@ -251,10 +273,10 @@ mod tests {
         );
         state.apply(update).unwrap();
 
-        // Expect "B" but will actually be "A", hence should panic.
+        // Should only get operations with matching genesis, so expect "A"
         assert_eq!(
-            state.get_state(&DummyContentId("X".into())),
-            Some(DummyPayload("B".into()))
+            state.get_state(&DummyContentId("X".into()), &DummyContentId("X".into())),
+            Some(DummyPayload("A".into()))
         );
     }
 }

@@ -41,30 +41,26 @@ where
         let cid = match &op.kind {
             OperationType::Create(payload) => self.dag.add_genesis_node(payload.clone(), ())?,
             OperationType::Update(payload) => {
-                let parents = self
-                    .dag
-                    .calculate_latest(&op.genesis)
-                    .ok()
-                    .flatten()
-                    .map(|head| vec![head])
-                    .unwrap_or_default();
-
+                let parents = self.get_latest_parents(&op.genesis);
                 self.dag
                     .add_version_node(payload.clone(), parents, op.genesis, ())?
             }
             OperationType::Delete => {
-                let parents = self
-                    .dag
-                    .calculate_latest(&op.genesis)
-                    .ok()
-                    .flatten()
-                    .map(|head| vec![head])
-                    .unwrap_or_default();
+                let parents = self.get_latest_parents(&op.genesis);
 
-                let last_payload = self
+                // For delete operations, find the latest payload in the original genesis (target)
+                let ops = self
                     .state
-                    .get_state(&op.target)
-                    .expect("content must exist for delete operation");
+                    .get_operations_by_genesis(&op.target)
+                    .expect("Failed to load operations for delete");
+                let last_payload = ops
+                    .iter()
+                    .filter(|o| o.payload().is_some())
+                    .max_by_key(|o| o.timestamp)
+                    .expect("content must exist for delete operation")
+                    .payload()
+                    .unwrap()
+                    .clone();
 
                 self.dag
                     .add_version_node(last_payload, parents, op.genesis, ())?
@@ -94,6 +90,16 @@ where
         self.dag
             .get_genesis(version)
             .map_err(crate::crdt::error::CrdtError::Graph)
+    }
+
+    /// Get the latest parent nodes for the given genesis
+    fn get_latest_parents(&self, genesis: &Cid) -> Vec<Cid> {
+        self.dag
+            .calculate_latest(genesis)
+            .ok()
+            .flatten()
+            .map(|head| vec![head])
+            .unwrap_or_default()
     }
 }
 
@@ -320,8 +326,9 @@ mod tests {
         let del_op = make_test_operation_with_genesis(shared_target, cid1, OperationType::Delete);
         repo.commit_operation(del_op).unwrap();
 
+        assert_eq!(repo.state.get_state(&shared_target, &cid1), None);
         assert_eq!(
-            repo.state.get_state(&shared_target),
+            repo.state.get_state(&shared_target, &cid2),
             Some(TestPayload("u2_updated".into()))
         );
     }

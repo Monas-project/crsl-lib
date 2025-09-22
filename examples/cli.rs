@@ -128,7 +128,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let cid = Cid::try_from(content_id.as_str())?;
 
                     // First try to get content from CRDT state
-                    let content = repo.state.get_state(&cid);
+                    let content = repo.state.get_state(&cid, &cid);
 
                     // Determine the genesis ID
                     let genesis_cid = if content.is_some() {
