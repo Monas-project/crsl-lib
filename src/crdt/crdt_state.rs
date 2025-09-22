@@ -72,9 +72,23 @@ where
             )))
         }
     }
-    pub fn get_state(&self, content_id: &ContentId) -> Option<T> {
-        let ops = self.storage.load_operations(content_id).ok()?;
+    pub fn get_state(&self, target_id: &ContentId) -> Option<T> {
+        let ops = self.storage.load_operations_by_target(target_id).ok()?;
         R::reduce(&ops)
+    }
+
+    /// Get state for a specific genesis and target combination.
+    /// This is useful when you need to isolate operations to a specific series.
+    pub fn get_state_for_genesis(&self, genesis_id: &ContentId, target_id: &ContentId) -> Option<T>
+    where
+        ContentId: PartialEq,
+    {
+        let ops = self.storage.load_operations_by_genesis(genesis_id).ok()?;
+        let filtered_ops: Vec<_> = ops
+            .into_iter()
+            .filter(|op| op.target == *target_id)
+            .collect();
+        R::reduce(&filtered_ops)
     }
 
     /// Validates whether an operation is logically valid to apply.
@@ -94,7 +108,7 @@ where
     pub fn validate_operation(&self, op: &Operation<ContentId, T>) -> Result<bool> {
         match &op.kind {
             OperationType::Update(_) | OperationType::Delete => {
-                let ops = self.storage.load_operations(&op.target)?;
+                let ops = self.storage.load_operations_by_genesis(&op.genesis)?;
                 Ok(ops
                     .iter()
                     .any(|o| matches!(o.kind, OperationType::Create(_))))
@@ -220,11 +234,10 @@ mod tests {
         );
     }
 
-    /// This test demonstrates an edge-case where two different genesis IDs share the same
-    /// `target`.  The update with a different genesis is **ignored** by `get_state`, which
-    /// filters by `op.genesis == content_id`.  The correct behaviour from a user perspective
-    /// would be to see the latest payload ("B") but the current implementation wrongly keeps
-    /// the older payload ("A").  The assertion therefore fails and captures the bug.
+    /// This test demonstrates that when two different genesis IDs share the same target,
+    /// get_state correctly returns the latest state across all operations for that target.
+    /// With the fixed implementation, both operations are considered when determining
+    /// the final state, so the LWW reducer will correctly return "B" as the latest value.
     #[test]
     fn test_same_target_different_genesis_collision() {
         let dir = tempfile::tempdir().unwrap();
@@ -241,6 +254,9 @@ mod tests {
         );
         state.apply(create.clone()).unwrap();
 
+        // Small delay to ensure update has a later timestamp
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
         // Simulate an update coming from another genesis (different series) but same target.
         let fake_genesis = DummyContentId("DIFFERENT".into());
         let update = Operation::new_with_genesis(
@@ -251,7 +267,7 @@ mod tests {
         );
         state.apply(update).unwrap();
 
-        // Expect "B" but will actually be "A", hence should panic.
+        // Now both operations are considered, and LWW will return "B" as it has a later timestamp
         assert_eq!(
             state.get_state(&DummyContentId("X".into())),
             Some(DummyPayload("B".into()))

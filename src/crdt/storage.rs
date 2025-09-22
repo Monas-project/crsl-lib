@@ -9,7 +9,8 @@ use ulid::Ulid;
 
 pub trait OperationStorage<ContentId, T> {
     fn save_operation(&self, op: &Operation<ContentId, T>) -> Result<()>;
-    fn load_operations(&self, content_id: &ContentId) -> Result<Vec<Operation<ContentId, T>>>;
+    fn load_operations_by_genesis(&self, genesis_id: &ContentId) -> Result<Vec<Operation<ContentId, T>>>;
+    fn load_operations_by_target(&self, target_id: &ContentId) -> Result<Vec<Operation<ContentId, T>>>;
     fn get_operation(&self, op_id: &Ulid) -> Result<Option<Operation<ContentId, T>>>;
 }
 
@@ -51,7 +52,7 @@ where
         Ok(())
     }
 
-    fn load_operations(&self, content_id: &ContentId) -> Result<Vec<Operation<ContentId, T>>> {
+    fn load_operations_by_genesis(&self, genesis_id: &ContentId) -> Result<Vec<Operation<ContentId, T>>> {
         let mut result = Vec::new();
         let mut iter = self
             .db
@@ -69,7 +70,35 @@ where
                 &value,
                 bincode::config::standard(),
             ) {
-                if op.genesis == *content_id {
+                if op.genesis == *genesis_id {
+                    result.push(op);
+                }
+            }
+            iter.advance();
+        }
+
+        Ok(result)
+    }
+
+    fn load_operations_by_target(&self, target_id: &ContentId) -> Result<Vec<Operation<ContentId, T>>> {
+        let mut result = Vec::new();
+        let mut iter = self
+            .db
+            .borrow_mut()
+            .new_iter()
+            .map_err(CrdtError::Storage)?;
+        // todo: Implement efficient search methods
+        iter.seek_to_first();
+        let mut key = Vec::new();
+        let mut value = Vec::new();
+
+        while iter.valid() {
+            iter.current(&mut key, &mut value);
+            if let Ok((op, _)) = bincode::serde::decode_from_slice::<Operation<ContentId, T>, _>(
+                &value,
+                bincode::config::standard(),
+            ) {
+                if op.target == *target_id {
                     result.push(op);
                 }
             }
@@ -184,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_operations() {
+    fn test_load_operations_by_genesis() {
         let (storage, _dir) = setup_test_storage();
         let target = DummyContentId("test".into());
         let target2 = DummyContentId("test2".into());
@@ -212,7 +241,7 @@ mod tests {
         storage.save_operation(&op2).unwrap();
         storage.save_operation(&op3).unwrap();
 
-        let retrieved_ops = storage.load_operations(&target);
+        let retrieved_ops = storage.load_operations_by_genesis(&target);
 
         assert!(retrieved_ops.is_ok());
         let ops = retrieved_ops.unwrap();
@@ -221,9 +250,53 @@ mod tests {
         assert!(ops.contains(&op2));
     }
 
-    /// Demonstrates that an Update with different genesis is **not** returned when querying by target.
     #[test]
-    fn test_same_target_different_genesis_ignored() {
+    fn test_load_operations_by_target() {
+        let (storage, _dir) = setup_test_storage();
+        let shared_target = DummyContentId("shared".into());
+        let _genesis_a = DummyContentId("genesis_a".into());
+        let genesis_b = DummyContentId("genesis_b".into());
+        let payload = DummyPayload("test".into());
+        let author = "Alice".to_string();
+
+        // Create operation with target = genesis (series A)
+        let op1 = Operation::new(
+            shared_target.clone(),
+            OperationType::Create(payload.clone()),
+            author.clone(),
+        );
+
+        // Update operation with different genesis but same target (series B)
+        let op2 = Operation::new_with_genesis(
+            shared_target.clone(),
+            genesis_b.clone(),
+            OperationType::Update(DummyPayload("updated".into())),
+            author.clone(),
+        );
+
+        storage.save_operation(&op1).unwrap();
+        storage.save_operation(&op2).unwrap();
+
+        // Load by target should return both operations
+        let ops_by_target = storage.load_operations_by_target(&shared_target).unwrap();
+        assert_eq!(ops_by_target.len(), 2);
+        assert!(ops_by_target.contains(&op1));
+        assert!(ops_by_target.contains(&op2));
+
+        // Load by genesis should return only matching genesis
+        let ops_by_genesis_a = storage.load_operations_by_genesis(&shared_target).unwrap();
+        assert_eq!(ops_by_genesis_a.len(), 1);
+        assert!(ops_by_genesis_a.contains(&op1));
+
+        let ops_by_genesis_b = storage.load_operations_by_genesis(&genesis_b).unwrap();
+        assert_eq!(ops_by_genesis_b.len(), 1);
+        assert!(ops_by_genesis_b.contains(&op2));
+    }
+
+    /// Demonstrates that both operations are returned when querying by target,
+    /// but only matching genesis when querying by genesis.
+    #[test]
+    fn test_same_target_different_genesis_collision() {
         let (storage, _dir) = setup_test_storage();
         let target = DummyContentId("shared".into());
         let payload = DummyPayload("one".into());
@@ -236,16 +309,22 @@ mod tests {
         storage.save_operation(&create).unwrap();
 
         // Update with DIFFERENT genesis but same target
+        let different_genesis = DummyContentId("DIFF".into());
         let update = Operation::new_with_genesis(
             target.clone(),
-            DummyContentId("DIFF".into()),
+            different_genesis.clone(),
             OperationType::Update(DummyPayload("two".into())),
             "u1".into(),
         );
         storage.save_operation(&update).unwrap();
 
-        let ops = storage.load_operations(&target).unwrap();
-        // Expect 2 operations but will get only 1, hence panic.
-        assert_eq!(ops.len(), 2);
+        // Load by target should return both
+        let ops_by_target = storage.load_operations_by_target(&target).unwrap();
+        assert_eq!(ops_by_target.len(), 2);
+
+        // Load by genesis should return only the create operation
+        let ops_by_genesis = storage.load_operations_by_genesis(&target).unwrap();
+        assert_eq!(ops_by_genesis.len(), 1);
+        assert!(ops_by_genesis.contains(&create));
     }
 }
