@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use ulid::Ulid;
 
+use crate::crdt::timestamp::next_monotonic_timestamp;
+
 /// Unique identifier for operations (based on Ulid)
 pub type OperationId = Ulid;
 pub type Author = String;
@@ -74,10 +76,7 @@ where
     ///
     /// A newly created operation object
     pub fn new(target: ContentId, kind: OperationType<T>, author: Author) -> Self {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as Timestamp;
+        let timestamp = next_monotonic_timestamp();
         let id = Ulid::new();
         let genesis = target.clone();
         Self {
@@ -103,10 +102,7 @@ where
         kind: OperationType<T>,
         author: Author,
     ) -> Self {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as Timestamp;
+        let timestamp = next_monotonic_timestamp();
         let id = Ulid::new();
         Self {
             id,

@@ -35,11 +35,13 @@ where
         Self { state, dag }
     }
 
-    pub fn commit_operation(&mut self, op: Operation<Cid, Payload>) -> Result<Cid> {
-        self.state.apply(op.clone())?;
-
+    pub fn commit_operation(&mut self, mut op: Operation<Cid, Payload>) -> Result<Cid> {
         let cid = match &op.kind {
-            OperationType::Create(payload) => self.dag.add_genesis_node(payload.clone(), ())?,
+            OperationType::Create(payload) => {
+                let genesis_cid = self.dag.add_genesis_node(payload.clone(), ())?;
+                op.genesis = genesis_cid;
+                genesis_cid
+            }
             OperationType::Update(payload) => {
                 let parents = self.get_latest_parents(&op.genesis);
                 self.dag
@@ -48,10 +50,10 @@ where
             OperationType::Delete => {
                 let parents = self.get_latest_parents(&op.genesis);
 
-                // For delete operations, find the latest payload in the original genesis (target)
+                // For delete operations, find the latest payload in the original genesis chain
                 let ops = self
                     .state
-                    .get_operations_by_genesis(&op.target)
+                    .get_operations_by_genesis(&op.genesis)
                     .expect("Failed to load operations for delete");
                 let last_payload = ops
                     .iter()
@@ -66,6 +68,8 @@ where
                     .add_version_node(last_payload, parents, op.genesis, ())?
             }
         };
+
+        self.state.apply(op)?;
 
         Ok(cid)
     }
@@ -110,7 +114,6 @@ mod tests {
     use crate::crdt::storage::LeveldbStorage;
     use crate::graph::storage::LeveldbNodeStorage;
     use tempfile::tempdir;
-    use ulid::Ulid;
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     #[serde(transparent)]
@@ -133,34 +136,14 @@ mod tests {
         target: Cid,
         kind: OperationType<TestPayload>,
     ) -> Operation<Cid, TestPayload> {
-        Operation {
-            id: Ulid::new(),
-            target,
-            genesis: target,
-            kind,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
-            author: "test".to_string(),
-        }
+        Operation::new(target, kind, "test".into())
     }
     fn make_test_operation_with_genesis(
         target: Cid,
         genesis: Cid,
         kind: OperationType<TestPayload>,
     ) -> Operation<Cid, TestPayload> {
-        Operation {
-            id: Ulid::new(),
-            target,
-            genesis,
-            kind,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
-            author: "test".to_string(),
-        }
+        Operation::new_with_genesis(target, genesis, kind, "test".into())
     }
 
     #[test]
@@ -197,6 +180,7 @@ mod tests {
             create_cid,
             OperationType::Update(TestPayload("updated".to_string())),
         );
+        std::thread::sleep(std::time::Duration::from_millis(1));
         let update_cid = repo.commit_operation(update_op).unwrap();
 
         assert!(repo.latest(&create_cid).is_some());
@@ -218,6 +202,7 @@ mod tests {
         let create_cid = repo.commit_operation(create_op).unwrap();
 
         let delete_op = make_test_operation_with_genesis(target, create_cid, OperationType::Delete);
+        std::thread::sleep(std::time::Duration::from_millis(1));
         let delete_cid = repo.commit_operation(delete_op).unwrap();
 
         assert!(repo.latest(&create_cid).is_some());
@@ -284,6 +269,7 @@ mod tests {
             genesis_a,
             OperationType::Update(TestPayload("A2".into())),
         );
+        std::thread::sleep(std::time::Duration::from_millis(1));
         let latest_a = repo.commit_operation(update_a).unwrap();
 
         // 確認: series A の latest は更新され、series B は変わらない
@@ -320,10 +306,12 @@ mod tests {
             cid2,
             OperationType::Update(TestPayload("u2_updated".into())),
         );
+        std::thread::sleep(std::time::Duration::from_millis(1));
         repo.commit_operation(update2).unwrap();
 
         // User1 delete
         let del_op = make_test_operation_with_genesis(shared_target, cid1, OperationType::Delete);
+        std::thread::sleep(std::time::Duration::from_millis(1));
         repo.commit_operation(del_op).unwrap();
 
         assert_eq!(repo.state.get_state(&shared_target, &cid1), None);

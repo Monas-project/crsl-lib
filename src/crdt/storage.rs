@@ -290,4 +290,45 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert!(ops.contains(&create));
     }
+
+    #[test]
+    fn test_load_operations_by_genesis() {
+        let (storage, _dir) = setup_test_storage();
+        let root = DummyContentId("root".into());
+        let child_a = DummyContentId("child_a".into());
+        let child_b = DummyContentId("child_b".into());
+        let other_root = DummyContentId("other_root".into());
+        let payload = DummyPayload("payload".into());
+
+        let create_root = Operation::new(
+            root.clone(),
+            OperationType::Create(payload.clone()),
+            "author".into(),
+        );
+        let update_child_a = Operation::new_with_genesis(
+            child_a.clone(),
+            root.clone(),
+            OperationType::Update(payload.clone()),
+            "author".into(),
+        );
+        let update_other = Operation::new_with_genesis(
+            child_b.clone(),
+            other_root.clone(),
+            OperationType::Update(payload.clone()),
+            "author".into(),
+        );
+
+        storage.save_operation(&create_root).unwrap();
+        storage.save_operation(&update_child_a).unwrap();
+        storage.save_operation(&update_other).unwrap();
+
+        let ops = storage
+            .load_operations_by_genesis(&root)
+            .expect("load by genesis should succeed");
+
+        assert_eq!(ops.len(), 2);
+        assert!(ops.contains(&create_root));
+        assert!(ops.contains(&update_child_a));
+        assert!(!ops.contains(&update_other));
+    }
 }

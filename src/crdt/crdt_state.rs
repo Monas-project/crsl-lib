@@ -279,4 +279,70 @@ mod tests {
             Some(DummyPayload("A".into()))
         );
     }
+
+    #[test]
+    fn test_delete_one_genesis_preserves_other_series() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            crate::crdt::storage::LeveldbStorage::<DummyContentId, DummyPayload>::open(dir.path())
+                .unwrap();
+        let state: CrdtState<DummyContentId, DummyPayload, _, LwwReducer> = CrdtState::new(storage);
+
+        let target = DummyContentId("X".into());
+        let primary_genesis = DummyContentId("X".into());
+        let alt_genesis = DummyContentId("ALT".into());
+
+        let mut primary_create = Operation::new_with_genesis(
+            target.clone(),
+            primary_genesis.clone(),
+            OperationType::Create(DummyPayload("A".into())),
+            "u1".into(),
+        );
+        primary_create.timestamp = 100;
+
+        let mut alt_create = Operation::new_with_genesis(
+            target.clone(),
+            alt_genesis.clone(),
+            OperationType::Create(DummyPayload("B".into())),
+            "u2".into(),
+        );
+        alt_create.timestamp = 150;
+
+        let mut alt_update = Operation::new_with_genesis(
+            target.clone(),
+            alt_genesis.clone(),
+            OperationType::Update(DummyPayload("C".into())),
+            "u2".into(),
+        );
+        alt_update.timestamp = 300;
+
+        let mut primary_delete = Operation::new_with_genesis(
+            target.clone(),
+            primary_genesis.clone(),
+            OperationType::Delete,
+            "u1".into(),
+        );
+        primary_delete.timestamp = 400;
+
+        state.apply(primary_create).unwrap();
+        state.apply(alt_create.clone()).unwrap();
+        state.apply(alt_update.clone()).unwrap();
+        state.apply(primary_delete).unwrap();
+
+        assert_eq!(state.get_state(&target, &primary_genesis), None);
+
+        assert_eq!(
+            state.get_state(&target, &alt_genesis),
+            Some(DummyPayload("C".into()))
+        );
+
+        let operations = state.get_operations_by_genesis(&alt_genesis).unwrap();
+        assert_eq!(operations.len(), 2);
+        assert!(operations
+            .iter()
+            .any(|op| op.kind == OperationType::Create(DummyPayload("B".into()))));
+        assert!(operations
+            .iter()
+            .any(|op| op.kind == OperationType::Update(DummyPayload("C".into()))));
+    }
 }
