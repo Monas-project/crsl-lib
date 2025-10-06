@@ -1,5 +1,4 @@
-# CRSL (Content Repository Storage Library)
-
+# CRSL
 CRSL is a Rust library for content versioning and CRDT (Conflict-free Replicated Data Type) in distributed systems. It provides content history management, branching, and merging capabilities, supporting offline-capable distributed application development.
 
 ## 🚀 Key Features
