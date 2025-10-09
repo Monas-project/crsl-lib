@@ -45,7 +45,7 @@ where
             OperationType::Update(payload) => {
                 let parents = self.get_latest_parents(&op.genesis);
                 self.dag
-                    .add_version_node(payload.clone(), parents, op.genesis, ())?
+                    .add_child_node(payload.clone(), parents, op.genesis, ())?
             }
             OperationType::Delete => {
                 let parents = self.get_latest_parents(&op.genesis);
@@ -65,7 +65,12 @@ where
                     .clone();
 
                 self.dag
-                    .add_version_node(last_payload, parents, op.genesis, ())?
+                    .add_child_node(last_payload, parents, op.genesis, ())?
+            }
+            OperationType::Merge(payload) => {
+                let parents = self.get_latest_parents(&op.genesis);
+                self.dag
+                    .add_child_node(payload.clone(), parents, op.genesis, ())?
             }
         };
 
@@ -80,13 +85,9 @@ where
 
     /// Get the complete history from genesis
     pub fn get_history(&self, genesis: &Cid) -> Result<Vec<Cid>> {
-        if let Some(latest) = self.latest(genesis) {
-            self.dag
-                .get_history_from_version(&latest)
-                .map_err(crate::crdt::error::CrdtError::Graph)
-        } else {
-            Ok(vec![])
-        }
+        self.dag
+            .get_nodes_by_genesis(genesis)
+            .map_err(crate::crdt::error::CrdtError::Graph)
     }
 
     /// Get genesis from any version
@@ -133,17 +134,10 @@ mod tests {
     }
 
     fn make_test_operation(
-        target: Cid,
-        kind: OperationType<TestPayload>,
-    ) -> Operation<Cid, TestPayload> {
-        Operation::new(target, kind, "test".into())
-    }
-    fn make_test_operation_with_genesis(
-        target: Cid,
         genesis: Cid,
         kind: OperationType<TestPayload>,
     ) -> Operation<Cid, TestPayload> {
-        Operation::new_with_genesis(target, genesis, kind, "test".into())
+        Operation::new(genesis, kind, "test".into())
     }
 
     #[test]
@@ -175,8 +169,7 @@ mod tests {
         );
         let create_cid = repo.commit_operation(create_op).unwrap();
 
-        let update_op = make_test_operation_with_genesis(
-            target,
+        let update_op = make_test_operation(
             create_cid,
             OperationType::Update(TestPayload("updated".to_string())),
         );
@@ -201,7 +194,7 @@ mod tests {
         );
         let create_cid = repo.commit_operation(create_op).unwrap();
 
-        let delete_op = make_test_operation_with_genesis(target, create_cid, OperationType::Delete);
+        let delete_op = make_test_operation(create_cid, OperationType::Delete);
         std::thread::sleep(std::time::Duration::from_millis(1));
         let delete_cid = repo.commit_operation(delete_op).unwrap();
 
@@ -264,8 +257,7 @@ mod tests {
         let genesis_b = repo.commit_operation(create_b).unwrap();
 
         // Update only series A
-        let update_a = make_test_operation_with_genesis(
-            shared_target,
+        let update_a = make_test_operation(
             genesis_a,
             OperationType::Update(TestPayload("A2".into())),
         );
@@ -301,8 +293,7 @@ mod tests {
         let cid2 = repo.commit_operation(create2).unwrap();
 
         // User2 update in its own series
-        let update2 = make_test_operation_with_genesis(
-            shared_target,
+        let update2 = make_test_operation(
             cid2,
             OperationType::Update(TestPayload("u2_updated".into())),
         );
@@ -310,13 +301,13 @@ mod tests {
         repo.commit_operation(update2).unwrap();
 
         // User1 delete
-        let del_op = make_test_operation_with_genesis(shared_target, cid1, OperationType::Delete);
+        let del_op = make_test_operation(cid1, OperationType::Delete);
         std::thread::sleep(std::time::Duration::from_millis(1));
         repo.commit_operation(del_op).unwrap();
 
-        assert_eq!(repo.state.get_state(&shared_target, &cid1), None);
+        assert_eq!(repo.state.get_state(&cid1), None);
         assert_eq!(
-            repo.state.get_state(&shared_target, &cid2),
+            repo.state.get_state(&cid2),
             Some(TestPayload("u2_updated".into()))
         );
     }

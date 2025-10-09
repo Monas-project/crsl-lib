@@ -15,6 +15,7 @@ pub enum OperationKind {
     Create,
     Update,
     Delete,
+    Merge,
 }
 
 /// Enum representing the type of operation
@@ -27,6 +28,7 @@ pub enum OperationType<T> {
     Create(T),
     Update(T),
     Delete,
+    Merge(T),
 }
 
 /// Helper methods to check the operation type
@@ -36,6 +38,7 @@ impl<T> OperationType<T> {
             OperationType::Create(_) => OperationKind::Create,
             OperationType::Update(_) => OperationKind::Update,
             OperationType::Delete => OperationKind::Delete,
+            OperationType::Merge(_) => OperationKind::Merge,
         }
     }
 }
@@ -52,7 +55,6 @@ impl<T> OperationType<T> {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Operation<ContentId, T> {
     pub id: OperationId,
-    pub target: ContentId,
     pub genesis: ContentId,
     pub kind: OperationType<T>,
     pub timestamp: Timestamp,
@@ -75,39 +77,12 @@ where
     /// # Returns
     ///
     /// A newly created operation object
-    pub fn new(target: ContentId, kind: OperationType<T>, author: Author) -> Self {
+    pub fn new(genesis: ContentId, kind: OperationType<T>, author: Author) -> Self {
         let timestamp = next_monotonic_timestamp();
         let id = Ulid::new();
-        let genesis = target.clone();
         Self {
             id,
-            target,
             genesis,
-            kind,
-            timestamp,
-            author,
-        }
-    }
-
-    /// Creates a new operation with a genesis content
-    ///
-    /// # Arguments
-    ///
-    /// * `target` - ID of the content being operated on
-    /// * `root_id` - ID of the genesis content
-    /// * `kind` - Type of operation and its payload
-    pub fn new_with_genesis(
-        target: ContentId,
-        root_id: ContentId,
-        kind: OperationType<T>,
-        author: Author,
-    ) -> Self {
-        let timestamp = next_monotonic_timestamp();
-        let id = Ulid::new();
-        Self {
-            id,
-            target,
-            genesis: root_id,
             kind,
             timestamp,
             author,
@@ -129,7 +104,9 @@ where
     /// or `None` for delete operations
     pub fn payload(&self) -> Option<&T> {
         match &self.kind {
-            OperationType::Create(v) | OperationType::Update(v) => Some(v),
+            OperationType::Create(v)
+            | OperationType::Update(v)
+            | OperationType::Merge(v) => Some(v),
             OperationType::Delete => None,
         }
     }
@@ -147,42 +124,18 @@ mod tests {
 
     #[test]
     fn test_operation_new_create() {
-        let target = DummyContentId("test".into());
+        let genesis = DummyContentId("test".into());
         let payload = DummyPayload("test".into());
         let author = "Alice".to_string();
 
         let op = Operation::new(
-            target.clone(),
-            OperationType::Create(payload.clone()),
-            author.clone(),
-        );
-
-        assert!(op.id != Ulid::nil());
-        assert_eq!(op.target, target);
-        assert_eq!(op.kind, OperationType::Create(payload.clone()));
-        assert!(op.timestamp > 0);
-        assert_eq!(op.author, author);
-        assert_eq!(op.payload(), Some(&payload));
-        assert!(op.is_type(OperationKind::Create));
-        assert!(!op.is_type(OperationKind::Update));
-        assert!(!op.is_type(OperationKind::Delete));
-    }
-    #[test]
-    fn test_operation_create_with_genesis() {
-        let target = DummyContentId("test".into());
-        let genesis = DummyContentId("genesis".into());
-        let payload = DummyPayload("test".into());
-        let author = "Alice".to_string();
-
-        let op = Operation::new_with_genesis(
-            target.clone(),
             genesis.clone(),
             OperationType::Create(payload.clone()),
             author.clone(),
         );
 
         assert!(op.id != Ulid::nil());
-        assert_eq!(op.target, target);
+        assert_eq!(op.genesis, genesis);
         assert_eq!(op.kind, OperationType::Create(payload.clone()));
         assert!(op.timestamp > 0);
         assert_eq!(op.author, author);
@@ -190,53 +143,64 @@ mod tests {
         assert!(op.is_type(OperationKind::Create));
         assert!(!op.is_type(OperationKind::Update));
         assert!(!op.is_type(OperationKind::Delete));
+        assert!(!op.is_type(OperationKind::Merge));
     }
-
     #[test]
     fn test_operation_update() {
-        let target = DummyContentId("test".into());
         let genesis = DummyContentId("genesis".into());
         let payload = DummyPayload("updated".into());
         let author = "Alice".to_string();
 
-        let op = Operation::new_with_genesis(
-            target.clone(),
-            genesis.clone(),
-            OperationType::Update(payload.clone()),
-            author.clone(),
-        );
+        let op = Operation::new(genesis.clone(), OperationType::Update(payload.clone()), author);
 
         assert!(op.id != Ulid::nil());
-        assert_eq!(op.target, target);
         assert_eq!(op.kind, OperationType::Update(payload.clone()));
         assert!(op.timestamp > 0);
-        assert_eq!(op.author, author);
         assert_eq!(op.payload(), Some(&payload));
         assert!(op.is_type(OperationKind::Update));
         assert!(!op.is_type(OperationKind::Create));
         assert!(!op.is_type(OperationKind::Delete));
+        assert!(!op.is_type(OperationKind::Merge));
     }
 
     #[test]
     fn test_operation_delete() {
-        let target = DummyContentId("test".into());
         let genesis = DummyContentId("genesis".into());
         let author = "Alice".to_string();
 
-        let op = Operation::<DummyContentId, DummyPayload>::new_with_genesis(
-            target.clone(),
+        let op = Operation::<DummyContentId, DummyPayload>::new(
             genesis.clone(),
             OperationType::Delete,
             author.clone(),
         );
 
         assert!(op.id != Ulid::nil());
-        assert_eq!(op.target, target);
         assert_eq!(op.kind, OperationType::Delete);
         assert!(op.timestamp > 0);
         assert_eq!(op.author, author);
         assert_eq!(op.payload(), None);
         assert!(!op.is_type(OperationKind::Create));
         assert!(op.is_type(OperationKind::Delete));
+    }
+
+    #[test]
+    fn test_operation_merge() {
+        let genesis = DummyContentId("merge-genesis".into());
+        let payload = DummyPayload("merged".into());
+        let author = "auto".to_string();
+
+        let op = Operation::new(
+            genesis.clone(),
+            OperationType::Merge(payload.clone()),
+            author.clone(),
+        );
+
+        assert!(op.id != Ulid::nil());
+        assert_eq!(op.genesis, genesis);
+        assert_eq!(op.kind, OperationType::Merge(payload.clone()));
+        assert!(op.timestamp > 0);
+        assert_eq!(op.author, author);
+        assert_eq!(op.payload(), Some(&payload));
+        assert!(op.is_type(OperationKind::Merge));
     }
 }

@@ -55,8 +55,7 @@ fn main() {
     let genesis_cid = repo.commit_operation(create_op).unwrap();
 
     // 2. Update content
-    let update_op = Operation::new_with_genesis(
-        content_id.clone(),
+    let update_op = Operation::new(
         genesis_cid,
         OperationType::Update(Content("Updated content".to_string())),
         "user1".to_string(),

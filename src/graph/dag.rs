@@ -95,7 +95,7 @@ where
         Ok(cid)
     }
 
-    /// Add a version node (subsequent version of content)
+    /// Add a child node (descendant of an existing node)
     ///
     /// # Arguments
     ///
@@ -106,9 +106,9 @@ where
     ///
     /// # Returns
     ///
-    /// * `Cid` - The content Id of the new version node
+    /// * `Cid` - The content Id of the new child node
     ///
-    pub fn add_version_node(
+    pub fn add_child_node(
         &mut self,
         payload: P,
         parents: Vec<Cid>,
@@ -134,6 +134,23 @@ where
         self.edges_forward.entry(cid).or_default();
 
         Ok(cid)
+    }
+
+    pub fn get_node(&self, cid: &Cid) -> Result<Option<Node<P, M>>> {
+        self.storage.get(cid)
+    }
+
+    pub fn get_nodes_by_genesis(&self, genesis_id: &Cid) -> Result<Vec<Cid>> {
+        let mut result = Vec::new();
+        let node_map = self.storage.get_node_map()?;
+        for (cid, _) in node_map {
+            if let Some(node) = self.storage.get(&cid)? {
+                if cid == *genesis_id || node.genesis == Some(*genesis_id) {
+                    result.push(cid);
+                }
+            }
+        }
+        Ok(result)
     }
 
     fn current_timestamp() -> Result<u64> {
@@ -317,48 +334,17 @@ where
     ///
     /// * `Cid` - The genesis CID
     ///
-    pub fn get_genesis(&self, version_cid: &Cid) -> Result<Cid> {
-        match self.storage.get(version_cid)? {
+    pub fn get_genesis(&self, node_cid: &Cid) -> Result<Cid> {
+        match self.storage.get(node_cid)? {
             Some(node) => match node.genesis {
                 Some(genesis_cid) => Ok(genesis_cid),
-                None => Ok(*version_cid),
+                None => Ok(*node_cid),
             },
-            None => Err(GraphError::NodeNotFound(*version_cid)),
+            None => Err(GraphError::NodeNotFound(*node_cid)),
         }
     }
 
-    /// Get history from a specific version
-    ///
-    /// # Arguments
-    ///
-    /// * `version_cid` - The version CID to get history from
-    ///
-    /// # Returns
-    ///
-    /// * `Vec<Cid>` - History from oldest to newest
-    ///
-    pub fn get_history_from_version(&self, version_cid: &Cid) -> Result<Vec<Cid>> {
-        let mut history = vec![];
-        let mut current = *version_cid;
-
-        loop {
-            let node = match self.storage.get(&current)? {
-                Some(node) => node,
-                None => return Err(GraphError::NodeNotFound(current)),
-            };
-            history.push(current);
-
-            if node.parents().is_empty() {
-                break;
-            }
-            current = node.parents()[0];
-        }
-
-        history.reverse();
-        Ok(history)
-    }
-
-    /// Calculates the latest version CID for a given genesis ID by finding the leaf node(s) with the most recent timestamp.
+    /// Calculates the latest node CID for a given genesis ID by finding the leaf node(s) with the most recent timestamp.
     ///
     /// # Arguments
     ///
@@ -372,15 +358,15 @@ where
     ///
     /// Returns an error if node retrieval fails or an internal error occurs.
     pub fn calculate_latest(&self, genesis_id: &Cid) -> Result<Option<Cid>> {
-        let versions = self.get_all_versions_for_genesis(genesis_id)?;
-        if versions.is_empty() {
+        let nodes = self.get_nodes_by_genesis(genesis_id)?;
+        if nodes.is_empty() {
             return Ok(None);
         }
-        if versions.len() == 1 {
-            return Ok(Some(versions[0]));
+        if nodes.len() == 1 {
+            return Ok(Some(nodes[0]));
         }
-        let has_children = self.collect_nodes_with_children(&versions)?;
-        let mut leaf_nodes = self.collect_leaf_nodes(&versions, &has_children)?;
+        let has_children = self.collect_nodes_with_children(&nodes)?;
+        let mut leaf_nodes = self.collect_leaf_nodes(&nodes, &has_children)?;
         leaf_nodes.sort_by_key(|(_, timestamp)| std::cmp::Reverse(*timestamp));
         Ok(leaf_nodes.first().map(|(cid, _)| *cid))
     }
@@ -388,13 +374,13 @@ where
     // Returns the set of nodes (CIDs) that are referenced as parents (i.e., nodes that have children) among the given versions.
     fn collect_nodes_with_children(
         &self,
-        versions: &[Cid],
+        nodes: &[Cid],
     ) -> Result<std::collections::HashSet<Cid>> {
         let mut has_children = std::collections::HashSet::new();
-        for &node_cid in versions {
+        for &node_cid in nodes {
             if let Some(node) = self.storage.get(&node_cid)? {
                 for parent_cid in node.parents() {
-                    if versions.contains(parent_cid) {
+                    if nodes.contains(parent_cid) {
                         has_children.insert(*parent_cid);
                     }
                 }
@@ -406,11 +392,11 @@ where
     // Returns a list of leaf nodes (nodes without children) and their timestamps among the given versions.
     fn collect_leaf_nodes(
         &self,
-        versions: &[Cid],
+        nodes: &[Cid],
         has_children: &std::collections::HashSet<Cid>,
     ) -> Result<Vec<(Cid, u64)>> {
         let mut leaf_nodes = Vec::new();
-        for &node_cid in versions {
+        for &node_cid in nodes {
             if !has_children.contains(&node_cid) {
                 if let Some(node) = self.storage.get(&node_cid)? {
                     leaf_nodes.push((node_cid, node.timestamp()));
@@ -420,19 +406,6 @@ where
         Ok(leaf_nodes)
     }
 
-    // Collects all CIDs of nodes related to the given genesis ID.
-    fn get_all_versions_for_genesis(&self, genesis_id: &Cid) -> Result<Vec<Cid>> {
-        let mut versions = Vec::new();
-        let node_map = self.storage.get_node_map()?;
-        for (cid, _) in node_map {
-            if let Some(node) = self.storage.get(&cid)? {
-                if cid == *genesis_id || node.genesis == Some(*genesis_id) {
-                    versions.push(cid);
-                }
-            }
-        }
-        Ok(versions)
-    }
 }
 
 #[cfg(test)]
@@ -735,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn test_latest_head() {
+    fn test_calculate_latest_basic() {
         let cid_a = create_test_content_id(b"node_a");
         let cid_b = create_test_content_id(b"node_b");
 
@@ -759,19 +732,19 @@ mod tests {
     }
 
     #[test]
-    fn test_add_version_node() {
+    fn test_add_child_node() {
         let mut dag = DagGraph::new(MockStorage::new());
         let genesis_cid = dag.add_genesis_node("genesis".to_string(), ()).unwrap();
-        let version_cid = dag
-            .add_version_node("version".to_string(), vec![genesis_cid], genesis_cid, ())
+        let child_cid = dag
+            .add_child_node("child".to_string(), vec![genesis_cid], genesis_cid, ())
             .unwrap();
 
         let latest = dag.calculate_latest(&genesis_cid).unwrap();
-        assert_eq!(latest, Some(version_cid));
+        assert_eq!(latest, Some(child_cid));
     }
 
     #[test]
-    fn test_empty_latest_head() {
+    fn test_calculate_latest_empty() {
         let dag = TestDag::new(MockStorage::new());
         let cid_a = create_test_content_id(b"node_a");
 
@@ -890,60 +863,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_history_from_version_simple_path() {
-        let mut storage = MockStorage::new();
-        let cid_a = create_test_content_id(b"node_a");
-        let cid_b = create_test_content_id(b"node_b");
-        let cid_c = create_test_content_id(b"node_c");
-        storage.setup_graph(&[(cid_a, cid_b), (cid_b, cid_c)]);
-        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
-
-        let history = dag.get_history_from_version(&cid_c).unwrap();
-        assert_eq!(history, vec![cid_a, cid_b, cid_c]);
-    }
-
-    #[test]
-    fn test_get_history_from_version_genesis_only() {
-        let storage = MockStorage::new();
-        let genesis_cid = create_test_content_id(b"genesis");
-        storage.edges.borrow_mut().entry(genesis_cid).or_default();
-        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
-
-        let history = dag.get_history_from_version(&genesis_cid).unwrap();
-        assert_eq!(history, vec![genesis_cid]);
-    }
-
-    #[test]
-    fn test_get_history_from_version_long_path() {
-        let mut storage = MockStorage::new();
-        let cid_a = create_test_content_id(b"node_a");
-        let cid_b = create_test_content_id(b"node_b");
-        let cid_c = create_test_content_id(b"node_c");
-        let cid_d = create_test_content_id(b"node_d");
-        let cid_e = create_test_content_id(b"node_e");
-        storage.setup_graph(&[
-            (cid_a, cid_b),
-            (cid_b, cid_c),
-            (cid_c, cid_d),
-            (cid_d, cid_e),
-        ]);
-        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
-
-        let history = dag.get_history_from_version(&cid_e).unwrap();
-        assert_eq!(history, vec![cid_a, cid_b, cid_c, cid_d, cid_e]);
-    }
-
-    #[test]
-    fn test_get_history_from_version_node_not_found() {
-        let storage = MockStorage::new();
-        let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
-        let non_existent_cid = create_test_content_id(b"non_existent");
-
-        let result = dag.get_history_from_version(&non_existent_cid);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_calculate_latest_genesis_only() {
         let storage = MockStorage::new();
         let genesis_cid = create_test_content_id(b"genesis");
@@ -989,24 +908,24 @@ mod tests {
     }
 
     #[test]
-    fn test_get_all_versions_genesis_only() {
+    fn test_get_nodes_by_genesis_genesis_only() {
         let storage = MockStorage::new();
         let genesis_cid = create_test_content_id(b"genesis");
         storage.edges.borrow_mut().entry(genesis_cid).or_default();
         let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
-        let result = dag.get_all_versions_for_genesis(&genesis_cid).unwrap();
+        let result = dag.get_nodes_by_genesis(&genesis_cid).unwrap();
         assert_eq!(result, vec![genesis_cid]);
     }
 
     #[test]
-    fn test_get_all_versions_with_children() {
+    fn test_get_nodes_by_genesis_with_children() {
         let mut storage = MockStorage::new();
         let genesis_cid = create_test_content_id(b"genesis");
         let v1_cid = create_test_content_id(b"v1");
         let v2_cid = create_test_content_id(b"v2");
         storage.setup_graph(&[(genesis_cid, v1_cid), (v1_cid, v2_cid)]);
         let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
-        let mut result = dag.get_all_versions_for_genesis(&genesis_cid).unwrap();
+        let mut result = dag.get_nodes_by_genesis(&genesis_cid).unwrap();
         result.sort();
         let mut expected = vec![genesis_cid, v1_cid, v2_cid];
         expected.sort();
@@ -1014,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_all_versions_excludes_unrelated() {
+    fn test_get_nodes_by_genesis_excludes_unrelated() {
         let mut storage = MockStorage::new();
         let genesis1_cid = create_test_content_id(b"genesis1");
         let v1_cid = create_test_content_id(b"v1");
@@ -1022,7 +941,7 @@ mod tests {
         storage.setup_graph(&[(genesis1_cid, v1_cid)]);
         storage.edges.borrow_mut().entry(unrelated_cid).or_default();
         let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
-        let mut result = dag.get_all_versions_for_genesis(&genesis1_cid).unwrap();
+        let mut result = dag.get_nodes_by_genesis(&genesis1_cid).unwrap();
         result.sort();
         let mut expected = vec![genesis1_cid, v1_cid];
         expected.sort();

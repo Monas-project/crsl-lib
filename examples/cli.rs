@@ -111,8 +111,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     let author = author.unwrap_or_else(|| "anonymous".to_string());
 
-                    let op = Operation::new_with_genesis(
-                        genesis_cid,
+                    let op = Operation::new(
                         genesis_cid,
                         OperationType::Update(content.clone()),
                         author,
@@ -128,7 +127,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let cid = Cid::try_from(content_id.as_str())?;
 
                     // First try to get content from CRDT state
-                    let content = repo.state.get_state(&cid, &cid);
+                    let content = repo.state.get_state(&cid);
 
                     // Determine the genesis ID
                     let genesis_cid = if content.is_some() {
@@ -216,22 +215,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Commands::HistoryFromVersion { version_id } => {
                     let version_cid = Cid::try_from(version_id.as_str())?;
 
-                    match repo.dag.get_history_from_version(&version_cid) {
-                        Ok(history) => {
-                            println!("📜 History from version: {version_id}");
-                            for (i, version_cid) in history.iter().enumerate() {
-                                let marker = if i == 0 {
-                                    "🌱"
-                                } else if i == history.len() - 1 {
-                                    "✨"
-                                } else {
-                                    "📝"
-                                };
-                                println!("   {} {}: {}", marker, i + 1, version_cid);
-                            }
+                    match repo.dag.get_node(&version_cid) {
+                        Ok(Some(node)) => {
+                            println!("📄 Node info for version: {version_id}");
+                            println!("   Genesis CID: {:?}", node.genesis);
+                            println!("   Parents: {:?}", node.parents());
+                            println!("   Timestamp: {}", node.timestamp());
+                        }
+                        Ok(None) => {
+                            eprintln!("❌ Version not found: {version_id}");
                         }
                         Err(e) => {
-                            eprintln!("❌ Error getting history from version: {e}");
+                            eprintln!("❌ Error fetching node: {e}");
                         }
                     }
                 }
