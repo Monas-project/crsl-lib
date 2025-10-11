@@ -129,11 +129,7 @@ mod tests {
         ts: u64,
         kind: OperationType<DummyPayload>,
     ) -> Operation<DummyContentId, DummyPayload> {
-        let mut op = Operation::new(
-            DummyContentId(id.to_string()),
-            kind,
-            "tester".into(),
-        );
+        let mut op = Operation::new(DummyContentId(id.to_string()), kind, "tester".into());
         op.timestamp = ts;
         op
     }
@@ -188,10 +184,7 @@ mod tests {
         state.apply(op1).unwrap();
         state.apply(op2).unwrap();
         state.apply(op3).unwrap();
-        assert_eq!(
-            state.get_state(&DummyContentId("1".to_string())),
-            None
-        );
+        assert_eq!(state.get_state(&DummyContentId("1".to_string())), None);
     }
 
     #[test]
@@ -298,11 +291,8 @@ mod tests {
         );
         alt_update.timestamp = 300;
 
-        let mut primary_delete = Operation::new(
-            primary_genesis.clone(),
-            OperationType::Delete,
-            "u1".into(),
-        );
+        let mut primary_delete =
+            Operation::new(primary_genesis.clone(), OperationType::Delete, "u1".into());
         primary_delete.timestamp = 400;
 
         state.apply(primary_create).unwrap();
@@ -312,7 +302,10 @@ mod tests {
 
         assert_eq!(state.get_state(&primary_genesis), None);
 
-        assert_eq!(state.get_state(&alt_genesis), Some(DummyPayload("C".into())));
+        assert_eq!(
+            state.get_state(&alt_genesis),
+            Some(DummyPayload("C".into()))
+        );
 
         let operations = state.get_operations_by_genesis(&alt_genesis).unwrap();
         assert_eq!(operations.len(), 2);

@@ -372,10 +372,7 @@ where
     }
 
     // Returns the set of nodes (CIDs) that are referenced as parents (i.e., nodes that have children) among the given versions.
-    fn collect_nodes_with_children(
-        &self,
-        nodes: &[Cid],
-    ) -> Result<std::collections::HashSet<Cid>> {
+    fn collect_nodes_with_children(&self, nodes: &[Cid]) -> Result<std::collections::HashSet<Cid>> {
         let mut has_children = std::collections::HashSet::new();
         for &node_cid in nodes {
             if let Some(node) = self.storage.get(&node_cid)? {
@@ -405,7 +402,6 @@ where
         }
         Ok(leaf_nodes)
     }
-
 }
 
 #[cfg(test)]

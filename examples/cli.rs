@@ -111,11 +111,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     let author = author.unwrap_or_else(|| "anonymous".to_string());
 
-                    let op = Operation::new(
-                        genesis_cid,
-                        OperationType::Update(content.clone()),
-                        author,
-                    );
+                    let op =
+                        Operation::new(genesis_cid, OperationType::Update(content.clone()), author);
 
                     let version_cid = repo.commit_operation(op)?;
 

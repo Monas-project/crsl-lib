@@ -257,10 +257,8 @@ mod tests {
         let genesis_b = repo.commit_operation(create_b).unwrap();
 
         // Update only series A
-        let update_a = make_test_operation(
-            genesis_a,
-            OperationType::Update(TestPayload("A2".into())),
-        );
+        let update_a =
+            make_test_operation(genesis_a, OperationType::Update(TestPayload("A2".into())));
         std::thread::sleep(std::time::Duration::from_millis(1));
         let latest_a = repo.commit_operation(update_a).unwrap();
 

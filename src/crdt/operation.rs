@@ -104,9 +104,9 @@ where
     /// or `None` for delete operations
     pub fn payload(&self) -> Option<&T> {
         match &self.kind {
-            OperationType::Create(v)
-            | OperationType::Update(v)
-            | OperationType::Merge(v) => Some(v),
+            OperationType::Create(v) | OperationType::Update(v) | OperationType::Merge(v) => {
+                Some(v)
+            }
             OperationType::Delete => None,
         }
     }
@@ -151,7 +151,11 @@ mod tests {
         let payload = DummyPayload("updated".into());
         let author = "Alice".to_string();
 
-        let op = Operation::new(genesis.clone(), OperationType::Update(payload.clone()), author);
+        let op = Operation::new(
+            genesis.clone(),
+            OperationType::Update(payload.clone()),
+            author,
+        );
 
         assert!(op.id != Ulid::nil());
         assert_eq!(op.kind, OperationType::Update(payload.clone()));

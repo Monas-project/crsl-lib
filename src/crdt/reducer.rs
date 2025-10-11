@@ -19,9 +19,9 @@ where
                     .then(a.id.to_bytes().cmp(&b.id.to_bytes()))
             })
             .and_then(|op| match &op.kind {
-                OperationType::Create(v)
-                | OperationType::Update(v)
-                | OperationType::Merge(v) => Some(v.clone()),
+                OperationType::Create(v) | OperationType::Update(v) | OperationType::Merge(v) => {
+                    Some(v.clone())
+                }
                 OperationType::Delete => None,
             })
     }

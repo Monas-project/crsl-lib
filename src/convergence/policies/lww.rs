@@ -34,7 +34,7 @@ mod tests {
 
     #[test]
     fn selects_highest_timestamp() {
-        let policy = LwwMergePolicy::default();
+        let policy = LwwMergePolicy;
         let inputs = vec![
             ResolveInput::new(create_test_cid("a"), "older".to_string(), 10),
             ResolveInput::new(create_test_cid("b"), "newer".to_string(), 20),
@@ -46,7 +46,7 @@ mod tests {
 
     #[test]
     fn ties_choose_last_entry() {
-        let policy = LwwMergePolicy::default();
+        let policy = LwwMergePolicy;
         let inputs = vec![
             ResolveInput::new(create_test_cid("a"), "first".to_string(), 42),
             ResolveInput::new(create_test_cid("b"), "second".to_string(), 42),
@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn selects_highest_timestamp_among_three() {
-        let policy = LwwMergePolicy::default();
+        let policy = LwwMergePolicy;
         let inputs = vec![
             ResolveInput::new(create_test_cid("a"), "payload-a".to_string(), 5),
             ResolveInput::new(create_test_cid("b"), "payload-b".to_string(), 10),
@@ -69,4 +69,3 @@ mod tests {
         assert_eq!(result, "payload-b");
     }
 }
-

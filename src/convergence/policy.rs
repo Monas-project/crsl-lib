@@ -26,4 +26,3 @@ pub trait MergePolicy<P>: Send + Sync {
     /// Return a descriptive name of the policy (e.g. "lww").
     fn name(&self) -> &str;
 }
-
