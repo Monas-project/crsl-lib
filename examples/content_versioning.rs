@@ -60,8 +60,7 @@ fn main() {
     // 2. Update  (v2)    ← HEAD = v1
     // ────────────────────────────────────────────────
     // todo: find the latest root_id or maybe get root_id from latest node??
-    let op_v2 = Operation::new_with_genesis(
-        cid.clone(),
+    let op_v2 = Operation::new(
         cid.clone(),
         OperationType::Update("Updated content".into()),
         "user1".into(),
@@ -78,8 +77,7 @@ fn main() {
     // ────────────────────────────────────────────────
     // 3. Update  (v3a)  ← branch A
     // ────────────────────────────────────────────────
-    let op_v3a = Operation::new_with_genesis(
-        cid.clone(),
+    let op_v3a = Operation::new(
         content_id.clone(),
         OperationType::Update("Updated content 2".to_string()),
         "user2".to_string(),
@@ -96,8 +94,7 @@ fn main() {
     // ────────────────────────────────────────────────
     // 4. Update  (v3b)   ← branch B (parent = v2)
     // ────────────────────────────────────────────────
-    let op_v3b = Operation::new_with_genesis(
-        cid.clone(),
+    let op_v3b = Operation::new(
         content_id.clone(),
         OperationType::Update("Updated content B".into()),
         "userB".into(),

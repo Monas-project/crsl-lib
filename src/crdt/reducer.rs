@@ -19,7 +19,9 @@ where
                     .then(a.id.to_bytes().cmp(&b.id.to_bytes()))
             })
             .and_then(|op| match &op.kind {
-                OperationType::Create(v) | OperationType::Update(v) => Some(v.clone()),
+                OperationType::Create(v) | OperationType::Update(v) | OperationType::Merge(v) => {
+                    Some(v.clone())
+                }
                 OperationType::Delete => None,
             })
     }
@@ -45,11 +47,11 @@ mod tests {
     ) -> Operation<DummyContentId, DummyPayload> {
         Operation {
             id: Ulid::new(),
-            target: DummyContentId(id.to_string()),
             genesis: DummyContentId(id.to_string()),
             kind,
             timestamp: ts,
             author: "test".into(),
+            parents: Vec::new(),
         }
     }
 
@@ -62,11 +64,11 @@ mod tests {
         let ulid = Ulid::from_string(ulid_str).unwrap();
         Operation {
             id: ulid,
-            target: DummyContentId(id.to_string()),
             genesis: DummyContentId(id.to_string()),
             kind,
             timestamp: ts,
             author: "test".into(),
+            parents: Vec::new(),
         }
     }
 
