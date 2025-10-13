@@ -104,7 +104,7 @@ where
                 payload.clone(),
                 op.parents.clone(),
                 op.genesis,
-                ContentMetadata::default(),
+                self.resolve_metadata_for_commit(&op.genesis, &op.parents)?,
             )?,
             OperationType::Delete => {
                 let ops = self.state.get_operations_by_genesis(&op.genesis)?;
@@ -129,22 +129,13 @@ where
                     last_payload,
                     op.parents.clone(),
                     op.genesis,
-                    ContentMetadata::default(),
+                    self.resolve_metadata_for_commit(&op.genesis, &op.parents)?,
                 )?
             }
-            OperationType::Merge(payload) => {
-                let parents = if !op.parents.is_empty() {
-                    self.validate_parent_genesis(&op.genesis, &op.parents)?;
-                    op.parents.clone()
-                } else {
-                    self.find_heads(&op.genesis)?
-                };
-                self.dag.add_child_node(
-                    payload.clone(),
-                    parents,
-                    op.genesis,
-                    ContentMetadata::default(),
-                )?
+            OperationType::Merge(_) => {
+                return Err(CrdtError::Internal(
+                    "Merge operations must be committed via auto-merge".to_string(),
+                ))
             }
         };
 
@@ -206,13 +197,22 @@ where
             self.resolver
                 .create_merge_node(&heads, &self.dag, *genesis, policy.as_ref())?;
 
-        let merge_op = Operation::new(
+        self.validate_parent_genesis(genesis, &heads)?;
+
+        let merge_cid = self.dag.add_child_node(
+            merge_node.payload().clone(),
+            heads.clone(),
+            *genesis,
+            merge_node.metadata().clone(),
+        )?;
+
+        let mut merge_op = Operation::new(
             *genesis,
             OperationType::Merge(merge_node.payload().clone()),
             "auto-merge".to_string(),
         );
-
-        let merge_cid = self.commit_operation_internal(merge_op, true)?;
+        merge_op.parents = heads;
+        self.state.apply(merge_op)?;
 
         Ok(Some(merge_cid))
     }
@@ -249,6 +249,28 @@ where
         match policy_type {
             "lww" => Ok(Box::new(LwwMergePolicy)),
             other => Err(CrdtError::Internal(format!("Unknown policy type: {other}"))),
+        }
+    }
+
+    fn resolve_metadata_for_commit(
+        &self,
+        genesis: &Cid,
+        parents: &[Cid],
+    ) -> Result<ContentMetadata> {
+        if let Some(parent) = parents.first() {
+            let node = self
+                .dag
+                .get_node(parent)
+                .map_err(CrdtError::Graph)?
+                .ok_or_else(|| CrdtError::Internal(format!("Parent node not found: {parent}")))?;
+            Ok(node.metadata().clone())
+        } else {
+            let genesis_node = self
+                .dag
+                .get_node(genesis)
+                .map_err(CrdtError::Graph)?
+                .ok_or_else(|| CrdtError::Internal(format!("Genesis not found: {genesis}")))?;
+            Ok(genesis_node.metadata().clone())
         }
     }
     /// Return parent -> children adjacency for the specified genesis (DAG structure).
