@@ -59,6 +59,8 @@ pub struct Operation<ContentId, T> {
     pub kind: OperationType<T>,
     pub timestamp: Timestamp,
     pub author: Author,
+    #[serde(default = "Vec::new")]
+    pub parents: Vec<ContentId>,
 }
 
 impl<ContentId, T> Operation<ContentId, T>
@@ -86,6 +88,7 @@ where
             kind,
             timestamp,
             author,
+            parents: Vec::new(),
         }
     }
 

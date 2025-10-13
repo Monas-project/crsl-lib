@@ -1,5 +1,6 @@
 use cid::Cid;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use crsl_lib::convergence::metadata::ContentMetadata;
 use crsl_lib::crdt::{
     crdt_state::CrdtState,
     operation::{Operation, OperationType},
@@ -8,8 +9,14 @@ use crsl_lib::crdt::{
 use crsl_lib::dasl::cid::ContentId;
 use crsl_lib::graph::{dag::DagGraph, storage::LeveldbNodeStorage};
 use crsl_lib::repo::Repo;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
+
+type CliRepo =
+    Repo<LeveldbStorage<Cid, String>, LeveldbNodeStorage<String, ContentMetadata>, String>;
+
+const DEFAULT_REPO_PATH: &str = "./crsl_data";
 
 #[derive(clap::Parser, Clone)]
 struct Cli {
@@ -36,6 +43,8 @@ enum Commands {
         content: String,
         #[arg(short, long)]
         author: Option<String>,
+        #[arg(long)]
+        parent: Option<String>,
     },
     Show {
         content_id: String,
@@ -43,14 +52,8 @@ enum Commands {
     History {
         #[arg(short, long)]
         genesis_id: String,
-    },
-    HistoryFromVersion {
-        #[arg(short, long)]
-        version_id: String,
-    },
-    Genesis {
-        #[arg(short, long)]
-        version_id: String,
+        #[arg(long, value_enum, default_value_t = HistoryMode::Tree)]
+        mode: HistoryMode,
     },
 }
 
@@ -68,18 +71,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("Initialized CRSL repository at {path:?}");
         }
         other_command => {
-            let repo_path = Path::new("./crsl_data");
+            let repo_path = Path::new(DEFAULT_REPO_PATH);
 
             if !repo_path.join(".crsl").exists() {
                 eprintln!("Repository not found. Run 'init' first.");
                 return Ok(());
             }
 
-            let op_storage = LeveldbStorage::open(repo_path.join("ops"))?;
-            let node_storage = LeveldbNodeStorage::open(repo_path.join("nodes"));
-            let state = CrdtState::new(op_storage);
-            let dag = DagGraph::new(node_storage);
-            let mut repo = Repo::new(state, dag);
+            let mut repo = open_repo(repo_path)?;
 
             match other_command {
                 Commands::Create { content, author } => {
@@ -96,29 +95,42 @@ fn main() -> Result<(), Box<dyn Error>> {
                     println!("   Content ID: {cid}");
                     println!("   Genesis: {version_cid}");
                     println!("   Version: {version_cid}");
-                    println!(
-                        "🔍 Debug: Latest head for genesis {}: {:?}",
-                        version_cid,
-                        repo.latest(&version_cid)
-                    );
                 }
                 Commands::Update {
                     genesis_id,
                     content,
                     author,
+                    parent,
                 } => {
+                    let author = author.unwrap_or_else(|| "anonymous".to_string());
                     let genesis_cid = Cid::try_from(genesis_id.as_str())?;
 
-                    let author = author.unwrap_or_else(|| "anonymous".to_string());
+                    let mut op = Operation::new(
+                        genesis_cid,
+                        OperationType::Update(content.clone()),
+                        author.clone(),
+                    );
 
-                    let op =
-                        Operation::new(genesis_cid, OperationType::Update(content.clone()), author);
+                    if let Some(parent) = parent {
+                        let parent_cid = Cid::try_from(parent.as_str())?;
+                        op.parents.push(parent_cid);
+                        println!("📝 Branched update:");
+                        println!("   Parent Version: {parent_cid}");
+                    } else {
+                        println!("📝 Updated content:");
+                    }
 
                     let version_cid = repo.commit_operation(op)?;
-
-                    println!("📝 Updated content:");
                     println!("   Genesis ID: {genesis_id}");
                     println!("   New Version: {version_cid}");
+
+                    if let Some(latest) = repo.latest(&genesis_cid) {
+                        if latest == version_cid {
+                            println!("   ✅ This is now the latest head");
+                        } else {
+                            println!("   ℹ️  Latest head remains: {latest}");
+                        }
+                    }
                 }
                 Commands::Show { content_id } => {
                     let cid = Cid::try_from(content_id.as_str())?;
@@ -183,67 +195,199 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                 }
-                Commands::History { genesis_id } => {
+                Commands::History { genesis_id, mode } => {
                     let genesis_cid = Cid::try_from(genesis_id.as_str())?;
+                    let result = match mode {
+                        HistoryMode::Tree => display_branching_history(&repo, &genesis_cid),
+                        HistoryMode::Linear => display_linear_history(&repo, &genesis_cid),
+                    };
 
-                    match repo.get_history(&genesis_cid) {
-                        Ok(history) => {
-                            println!("📜 History for genesis: {genesis_id}");
-                            if history.is_empty() {
-                                println!("   No history found (genesis only)");
-                            } else {
-                                for (i, version_cid) in history.iter().enumerate() {
-                                    let marker = if i == 0 {
-                                        "🌱"
-                                    } else if i == history.len() - 1 {
-                                        "✨"
-                                    } else {
-                                        "📝"
-                                    };
-                                    println!("   {} {}: {}", marker, i + 1, version_cid);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("❌ Error getting history: {e}");
-                        }
+                    if let Err(e) = result {
+                        eprintln!("❌ Error rendering history: {e}");
                     }
                 }
-                Commands::HistoryFromVersion { version_id } => {
-                    let version_cid = Cid::try_from(version_id.as_str())?;
-
-                    match repo.dag.get_node(&version_cid) {
-                        Ok(Some(node)) => {
-                            println!("📄 Node info for version: {version_id}");
-                            println!("   Genesis CID: {:?}", node.genesis);
-                            println!("   Parents: {:?}", node.parents());
-                            println!("   Timestamp: {}", node.timestamp());
-                        }
-                        Ok(None) => {
-                            eprintln!("❌ Version not found: {version_id}");
-                        }
-                        Err(e) => {
-                            eprintln!("❌ Error fetching node: {e}");
-                        }
-                    }
-                }
-                Commands::Genesis { version_id } => {
-                    let version_cid = Cid::try_from(version_id.as_str())?;
-
-                    match repo.get_genesis(&version_cid) {
-                        Ok(genesis_cid) => {
-                            println!("🌱 Genesis for version: {version_id}");
-                            println!("   Genesis CID: {genesis_cid}");
-                        }
-                        Err(e) => {
-                            eprintln!("❌ Error getting genesis: {e}");
-                        }
-                    }
-                }
-                _ => unreachable!(),
+                Commands::Init { .. } => unreachable!("init should be handled before repo setup"),
             }
         }
     }
 
     Ok(())
+}
+
+fn open_repo(repo_path: &Path) -> Result<CliRepo, Box<dyn Error>> {
+    let op_storage = LeveldbStorage::open(repo_path.join("ops"))?;
+    let node_storage = LeveldbNodeStorage::open(repo_path.join("nodes"));
+    let state = CrdtState::new(op_storage);
+    let dag = DagGraph::new(node_storage);
+    Ok(Repo::new(state, dag))
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum HistoryMode {
+    Tree,
+    Linear,
+}
+
+fn display_branching_history(repo: &CliRepo, genesis: &Cid) -> Result<(), Box<dyn Error>> {
+    let adjacency = repo
+        .branching_history(genesis)
+        .map_err(Box::<dyn Error>::from)?;
+    println!("📜 Branching history for genesis: {genesis}");
+
+    let mut visited = HashSet::new();
+    let mut counter = 1;
+    print_branching_node(
+        repo,
+        &adjacency,
+        genesis,
+        "",
+        true,
+        &mut visited,
+        &mut counter,
+    )?;
+    Ok(())
+}
+
+fn print_branching_node(
+    repo: &CliRepo,
+    adjacency: &HashMap<Cid, Vec<Cid>>,
+    current: &Cid,
+    prefix: &str,
+    is_last: bool,
+    visited: &mut HashSet<Cid>,
+    counter: &mut usize,
+) -> Result<(), crsl_lib::crdt::error::CrdtError> {
+    if !visited.insert(*current) {
+        return Ok(());
+    }
+
+    let node = repo
+        .dag
+        .get_node(current)
+        .map_err(crsl_lib::crdt::error::CrdtError::Graph)?;
+
+    let (marker, detail) = match node {
+        Some(ref n) => {
+            let marker = if n.parents().is_empty() {
+                "🌱"
+            } else if n.parents().len() > 1 {
+                "🔀"
+            } else {
+                "🧩"
+            };
+            let summary = clean_payload_summary(n.payload());
+            let label = format!("node{}", *counter);
+            *counter += 1;
+            (marker, format!("{label}: {current} | {summary}"))
+        }
+        None => {
+            let label = format!("node{}", *counter);
+            *counter += 1;
+            ("❓", format!("{label}: {current} (missing)"))
+        }
+    };
+
+    let branch_symbol = if prefix.is_empty() {
+        ""
+    } else if is_last {
+        "└── "
+    } else {
+        "├── "
+    };
+    println!("{prefix}{branch_symbol}{marker} {detail}");
+
+    let mut children: Vec<(Cid, u64)> = adjacency
+        .get(current)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|cid| {
+            let ts = repo
+                .dag
+                .get_node(&cid)
+                .map_err(crsl_lib::crdt::error::CrdtError::Graph)?
+                .map(|n| n.timestamp())
+                .unwrap_or(0);
+            Ok::<(Cid, u64), crsl_lib::crdt::error::CrdtError>((cid, ts))
+        })
+        .collect::<Result<_, _>>()?;
+
+    children.sort_by_key(|(_, ts)| *ts);
+    children.dedup_by(|a, b| a.0 == b.0);
+    let total = children.len();
+
+    for (index, (child, _)) in children.into_iter().enumerate() {
+        let child_is_last = index + 1 == total;
+        let new_prefix = if prefix.is_empty() {
+            if is_last {
+                "    ".to_string()
+            } else {
+                "│   ".to_string()
+            }
+        } else if is_last {
+            format!("{prefix}    ")
+        } else {
+            format!("{prefix}│   ")
+        };
+        print_branching_node(
+            repo,
+            adjacency,
+            &child,
+            &new_prefix,
+            child_is_last,
+            visited,
+            counter,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn display_linear_history(repo: &CliRepo, genesis: &Cid) -> Result<(), Box<dyn Error>> {
+    let mut path = repo
+        .linear_history(genesis)
+        .map_err(Box::<dyn Error>::from)?;
+
+    path.dedup();
+
+    if path.is_empty() {
+        println!("(no timeline entries for genesis {genesis})");
+        return Ok(());
+    }
+
+    println!("🧭 Timeline for genesis: {genesis}");
+    for (index, cid) in path.iter().enumerate() {
+        let node = repo
+            .dag
+            .get_node(cid)
+            .map_err(crsl_lib::crdt::error::CrdtError::Graph)?;
+        let (marker, info) = match node {
+            Some(ref n) => {
+                let marker = if index == 0 {
+                    "🌱"
+                } else if n.parents().len() > 1 {
+                    "🔀"
+                } else if index == path.len() - 1 {
+                    "✨"
+                } else {
+                    "🧩"
+                };
+                let summary = clean_payload_summary(n.payload());
+                (marker, format!("node{}: {cid} | {summary}", index + 1))
+            }
+            None => ("❓", format!("node{}: {cid} (missing)", index + 1)),
+        };
+        println!("   {marker} {info}");
+    }
+
+    Ok(())
+}
+
+fn clean_payload_summary(payload: &str) -> String {
+    let trimmed = payload.trim();
+    if trimmed.len() <= 48 {
+        trimmed.to_string()
+    } else {
+        format!("{}…", &trimmed[..45])
+    }
 }
