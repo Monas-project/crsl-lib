@@ -168,7 +168,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 if latest_version == cid {
                                     println!("   Latest version: {latest_version} ✅ (this is the latest)");
                                 } else {
-                                    println!("   Latest version: {latest_version} ⚠️  (this is not the latest)");
+                                    println!("   Latest version: {latest_version} ⚠️  (not the latest version)");
                                 }
                             } else {
                                 println!("   Latest version: Not found");
@@ -187,7 +187,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 if latest_version == cid {
                                     println!("   Latest version: {latest_version} ✅ (this is the latest)");
                                 } else {
-                                    println!("   Latest version: {latest_version} ⚠️  (this is not the latest)");
+                                    println!("   Latest version: {latest_version} ⚠️  (not the latest version)");
                                 }
                             } else {
                                 println!("   Latest version: Not found");
