@@ -14,6 +14,7 @@ use crsl_lib::{
         storage::LeveldbStorage as OpStore,
     },
     graph::{dag::DagGraph, storage::LeveldbNodeStorage as NodeStorage},
+    storage::SharedLeveldb,
 };
 use tempfile::tempdir;
 
@@ -23,8 +24,9 @@ type ContentState = CrdtState<String, Content, Store, LwwReducer>;
 
 fn main() {
     let tmp = tempdir().expect("tmp dir");
-    let op_store = OpStore::open(tmp.path().join("ops")).unwrap();
-    let node_store = NodeStorage::open(tmp.path().join("nodes"));
+    let shared = SharedLeveldb::open(tmp.path().join("store")).unwrap();
+    let op_store = OpStore::new(shared.clone());
+    let node_store = NodeStorage::new(shared);
     let state = ContentState::new(op_store);
     let mut _dag = DagGraph::<_, Content, ()>::new(node_store);
 

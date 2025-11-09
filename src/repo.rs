@@ -3,6 +3,7 @@ use crate::convergence::{
     resolver::ConflictResolver,
 };
 use crate::crdt::error::{CrdtError, Result};
+use crate::storage::{BatchError, LeveldbBatchGuard, SharedLeveldb, SharedLeveldbAccess};
 use crate::{
     crdt::{
         crdt_state::CrdtState,
@@ -10,17 +11,25 @@ use crate::{
         reducer::LwwReducer,
         storage::OperationStorage,
     },
+    dasl::node::Node,
     graph::{dag::DagGraph, storage::NodeStorage},
 };
 use cid::Cid;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+use std::rc::Rc;
+
+struct PendingNode {
+    cid: Cid,
+    parents: Vec<Cid>,
+    metadata: ContentMetadata,
+}
 
 pub struct Repo<OpStore, NodeStore, Payload>
 where
-    OpStore: OperationStorage<Cid, Payload>,
-    NodeStore: NodeStorage<Payload, ContentMetadata>,
+    OpStore: OperationStorage<Cid, Payload> + SharedLeveldbAccess,
+    NodeStore: NodeStorage<Payload, ContentMetadata> + SharedLeveldbAccess,
     Payload: Clone + Serialize + for<'de> Deserialize<'de> + Debug,
 {
     pub state: CrdtState<Cid, Payload, OpStore, LwwReducer>,
@@ -30,8 +39,8 @@ where
 
 impl<OpStore, NodeStore, Payload> Repo<OpStore, NodeStore, Payload>
 where
-    OpStore: OperationStorage<Cid, Payload>,
-    NodeStore: NodeStorage<Payload, ContentMetadata>,
+    OpStore: OperationStorage<Cid, Payload> + SharedLeveldbAccess,
+    NodeStore: NodeStorage<Payload, ContentMetadata> + SharedLeveldbAccess,
     Payload: Clone + Serialize + for<'de> Deserialize<'de> + Debug,
 {
     pub fn new(
@@ -56,97 +65,10 @@ where
         self.commit_operation_internal(op, false)
     }
 
-    fn commit_operation_internal(
-        &mut self,
-        op: Operation<Cid, Payload>,
-        skip_auto_merge: bool,
-    ) -> Result<Cid> {
-        let mut op = op;
-
-        if !skip_auto_merge {
-            match &op.kind {
-                OperationType::Update(_) | OperationType::Delete => {
-                    if op.parents.is_empty() {
-                        let merged_head = self
-                            .check_and_merge(&op.genesis)?
-                            .or_else(|| self.dag.calculate_latest(&op.genesis).ok().flatten())
-                            .ok_or_else(|| {
-                                CrdtError::Internal(format!(
-                                    "No head available for genesis {} to attach operation",
-                                    op.genesis
-                                ))
-                            })?;
-
-                        op.parents = vec![merged_head];
-                    } else {
-                        self.validate_parent_genesis(&op.genesis, &op.parents)?;
-                    }
-                }
-                OperationType::Merge(_) => {
-                    if op.parents.is_empty() {
-                        op.parents = self.find_heads(&op.genesis)?;
-                    }
-                    self.validate_parent_genesis(&op.genesis, &op.parents)?;
-                }
-                OperationType::Create(_) => {}
-            }
-        }
-
-        let cid = match &op.kind {
-            OperationType::Create(payload) => {
-                let genesis_cid = self
-                    .dag
-                    .add_genesis_node(payload.clone(), ContentMetadata::default())?;
-                op.genesis = genesis_cid;
-                genesis_cid
-            }
-            OperationType::Update(payload) => self.dag.add_child_node(
-                payload.clone(),
-                op.parents.clone(),
-                op.genesis,
-                self.resolve_metadata_for_commit(&op.genesis, &op.parents)?,
-            )?,
-            OperationType::Delete => {
-                let ops = self.state.get_operations_by_genesis(&op.genesis)?;
-                let last_payload = ops
-                    .iter()
-                    .filter_map(|operation| {
-                        operation
-                            .payload()
-                            .cloned()
-                            .map(|payload| (operation.timestamp, payload))
-                    })
-                    .max_by_key(|(timestamp, _)| *timestamp)
-                    .map(|(_, payload)| payload)
-                    .ok_or_else(|| {
-                        CrdtError::Internal(format!(
-                            "content must exist for delete operation: {}",
-                            op.genesis
-                        ))
-                    })?;
-
-                self.dag.add_child_node(
-                    last_payload,
-                    op.parents.clone(),
-                    op.genesis,
-                    self.resolve_metadata_for_commit(&op.genesis, &op.parents)?,
-                )?
-            }
-            OperationType::Merge(_) => {
-                return Err(CrdtError::Internal(
-                    "Merge operations must be committed via auto-merge".to_string(),
-                ))
-            }
-        };
-
-        self.state.apply(op)?;
-
-        Ok(cid)
-    }
-
     pub fn latest(&self, genesis_id: &Cid) -> Option<Cid> {
         self.dag.calculate_latest(genesis_id).ok().flatten()
     }
+
     /// Convenience wrapper around `DagGraph::get_genesis`
     pub fn get_genesis(&self, cid: &Cid) -> Result<Cid> {
         self.dag.get_genesis(cid).map_err(CrdtError::Graph)
@@ -165,114 +87,6 @@ where
             .collect())
     }
 
-    /// Get the latest parent nodes for the given genesis
-    fn validate_parent_genesis(&self, genesis: &Cid, parents: &[Cid]) -> Result<()> {
-        for parent in parents {
-            let parent_genesis = self.dag.get_genesis(parent).map_err(CrdtError::Graph)?;
-            if &parent_genesis != genesis {
-                return Err(CrdtError::Internal(format!(
-                    "Parent {parent} does not belong to genesis {genesis}"
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    fn check_and_merge(&mut self, genesis: &Cid) -> Result<Option<Cid>> {
-        let heads = self.find_heads(genesis)?;
-
-        if heads.len() <= 1 {
-            return Ok(None);
-        }
-
-        let genesis_node = self
-            .dag
-            .get_node(genesis)
-            .map_err(CrdtError::Graph)?
-            .ok_or_else(|| CrdtError::Internal(format!("Genesis not found: {genesis}")))?;
-        let policy_type = genesis_node.metadata().policy_type();
-        let policy = self.create_policy(policy_type)?;
-
-        let merge_node =
-            self.resolver
-                .create_merge_node(&heads, &self.dag, *genesis, policy.as_ref())?;
-
-        self.validate_parent_genesis(genesis, &heads)?;
-
-        let merge_cid = self.dag.add_child_node(
-            merge_node.payload().clone(),
-            heads.clone(),
-            *genesis,
-            merge_node.metadata().clone(),
-        )?;
-
-        let mut merge_op = Operation::new(
-            *genesis,
-            OperationType::Merge(merge_node.payload().clone()),
-            "auto-merge".to_string(),
-        );
-        merge_op.parents = heads;
-        self.state.apply(merge_op)?;
-
-        Ok(Some(merge_cid))
-    }
-
-    fn find_heads(&self, genesis: &Cid) -> Result<Vec<Cid>> {
-        let nodes = self
-            .dag
-            .get_nodes_by_genesis(genesis)
-            .map_err(CrdtError::Graph)?;
-        if nodes.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let node_set: HashSet<Cid> = nodes.iter().copied().collect();
-        let mut parents_within = HashSet::new();
-
-        for cid in &nodes {
-            if let Some(node) = self.dag.get_node(cid).map_err(CrdtError::Graph)? {
-                for parent in node.parents() {
-                    if node_set.contains(parent) {
-                        parents_within.insert(*parent);
-                    }
-                }
-            }
-        }
-
-        Ok(nodes
-            .into_iter()
-            .filter(|cid| !parents_within.contains(cid))
-            .collect())
-    }
-
-    fn create_policy(&self, policy_type: &str) -> Result<Box<dyn MergePolicy<Payload>>> {
-        match policy_type {
-            "lww" => Ok(Box::new(LwwMergePolicy)),
-            other => Err(CrdtError::Internal(format!("Unknown policy type: {other}"))),
-        }
-    }
-
-    fn resolve_metadata_for_commit(
-        &self,
-        genesis: &Cid,
-        parents: &[Cid],
-    ) -> Result<ContentMetadata> {
-        if let Some(parent) = parents.first() {
-            let node = self
-                .dag
-                .get_node(parent)
-                .map_err(CrdtError::Graph)?
-                .ok_or_else(|| CrdtError::Internal(format!("Parent node not found: {parent}")))?;
-            Ok(node.metadata().clone())
-        } else {
-            let genesis_node = self
-                .dag
-                .get_node(genesis)
-                .map_err(CrdtError::Graph)?
-                .ok_or_else(|| CrdtError::Internal(format!("Genesis not found: {genesis}")))?;
-            Ok(genesis_node.metadata().clone())
-        }
-    }
     /// Return parent -> children adjacency for the specified genesis (DAG structure).
     pub fn branching_history(&self, genesis: &Cid) -> Result<HashMap<Cid, Vec<Cid>>> {
         let nodes = self
@@ -337,6 +151,334 @@ where
         Ok(path)
     }
 
+    fn shared_leveldb(&self) -> Result<Rc<SharedLeveldb>> {
+        let op_db = self.state.storage().shared_leveldb().ok_or_else(|| {
+            CrdtError::Internal("operation storage does not support batching".into())
+        })?;
+        let node_db =
+            self.dag.storage.shared_leveldb().ok_or_else(|| {
+                CrdtError::Internal("node storage does not support batching".into())
+            })?;
+
+        if !Rc::ptr_eq(&op_db, &node_db) {
+            return Err(CrdtError::Internal(
+                "operation and node storage must share the same LevelDB instance for transactions"
+                    .into(),
+            ));
+        }
+
+        Ok(op_db)
+    }
+
+    fn commit_operation_internal(
+        &mut self,
+        op: Operation<Cid, Payload>,
+        skip_auto_merge: bool,
+    ) -> Result<Cid> {
+        let mut op = op;
+        let shared = self.shared_leveldb()?;
+        let batch_guard = Self::begin_shared_batch(&shared)?;
+        let mut pending_nodes: Vec<PendingNode> = Vec::new();
+
+        if !skip_auto_merge {
+            self.ensure_parent_context(&mut op, &mut pending_nodes)?;
+        }
+
+        let cid = match op.kind.clone() {
+            OperationType::Create(payload) => {
+                self.stage_create(payload, &mut op, &mut pending_nodes)?
+            }
+            OperationType::Update(payload) => {
+                self.stage_update(payload, &op, &mut pending_nodes)?
+            }
+            OperationType::Delete => self.stage_delete(&op, &mut pending_nodes)?,
+            OperationType::Merge(_) => {
+                return Err(CrdtError::Internal(
+                    "Merge operations must be committed via auto-merge".to_string(),
+                ))
+            }
+        };
+
+        if let Err(err) = self.state.apply(op) {
+            self.rollback_pending_nodes(&pending_nodes);
+            return Err(err);
+        }
+
+        if let Err(status) = batch_guard.commit() {
+            self.rollback_pending_nodes(&pending_nodes);
+            return Err(CrdtError::Storage(status));
+        }
+
+        Ok(cid)
+    }
+
+    fn begin_shared_batch(shared: &SharedLeveldb) -> Result<LeveldbBatchGuard<'_>> {
+        shared.begin_batch().map_err(|err| match err {
+            BatchError::Unsupported => CrdtError::Internal(
+                "current storage backend does not support transactions".to_string(),
+            ),
+            BatchError::AlreadyActive => CrdtError::Internal(
+                "a transaction is already active on the shared LevelDB".to_string(),
+            ),
+            BatchError::Commit(status) => CrdtError::Storage(status),
+        })
+    }
+
+    fn rollback_pending_nodes(&mut self, pending: &[PendingNode]) {
+        for node in pending.iter().rev() {
+            self.dag.rollback_pending_node(&node.cid, &node.parents);
+        }
+    }
+
+    fn ensure_parent_context(
+        &mut self,
+        op: &mut Operation<Cid, Payload>,
+        pending_nodes: &mut Vec<PendingNode>,
+    ) -> Result<()> {
+        match &op.kind {
+            OperationType::Update(_) | OperationType::Delete => {
+                if op.parents.is_empty() {
+                    let merged_head = self
+                        .check_and_merge(&op.genesis, pending_nodes)?
+                        .or_else(|| self.dag.calculate_latest(&op.genesis).ok().flatten())
+                        .ok_or_else(|| {
+                            CrdtError::Internal(format!(
+                                "No head available for genesis {} to attach operation",
+                                op.genesis
+                            ))
+                        })?;
+
+                    op.parents = vec![merged_head];
+                } else {
+                    self.validate_parent_genesis(&op.genesis, &op.parents)?;
+                }
+            }
+            OperationType::Merge(_) => {
+                if op.parents.is_empty() {
+                    op.parents = self.find_heads(&op.genesis)?;
+                }
+                self.validate_parent_genesis(&op.genesis, &op.parents)?;
+            }
+            OperationType::Create(_) => {}
+        }
+        Ok(())
+    }
+
+    fn stage_create(
+        &mut self,
+        payload: Payload,
+        op: &mut Operation<Cid, Payload>,
+        pending_nodes: &mut Vec<PendingNode>,
+    ) -> Result<Cid> {
+        let (genesis_cid, node) = self
+            .dag
+            .prepare_genesis_node(payload, ContentMetadata::default())?;
+        let cid = self.stage_prepared_node(genesis_cid, node, pending_nodes)?;
+        op.genesis = cid;
+        Ok(cid)
+    }
+
+    fn stage_update(
+        &mut self,
+        payload: Payload,
+        op: &Operation<Cid, Payload>,
+        pending_nodes: &mut Vec<PendingNode>,
+    ) -> Result<Cid> {
+        let metadata =
+            self.resolve_metadata_for_commit(&op.genesis, &op.parents, pending_nodes.as_slice())?;
+        let (cid, node) =
+            self.dag
+                .prepare_child_node(payload, op.parents.clone(), op.genesis, metadata)?;
+        self.stage_prepared_node(cid, node, pending_nodes)
+    }
+
+    fn stage_delete(
+        &mut self,
+        op: &Operation<Cid, Payload>,
+        pending_nodes: &mut Vec<PendingNode>,
+    ) -> Result<Cid> {
+        let ops = self.state.get_operations_by_genesis(&op.genesis)?;
+        let last_payload = ops
+            .iter()
+            .filter_map(|operation| {
+                operation
+                    .payload()
+                    .cloned()
+                    .map(|payload| (operation.timestamp, payload))
+            })
+            .max_by_key(|(timestamp, _)| *timestamp)
+            .map(|(_, payload)| payload)
+            .ok_or_else(|| {
+                CrdtError::Internal(format!(
+                    "content must exist for delete operation: {}",
+                    op.genesis
+                ))
+            })?;
+
+        let metadata =
+            self.resolve_metadata_for_commit(&op.genesis, &op.parents, pending_nodes.as_slice())?;
+        let (cid, node) =
+            self.dag
+                .prepare_child_node(last_payload, op.parents.clone(), op.genesis, metadata)?;
+        self.stage_prepared_node(cid, node, pending_nodes)
+    }
+
+    fn stage_prepared_node(
+        &mut self,
+        cid: Cid,
+        node: Node<Payload, ContentMetadata>,
+        pending_nodes: &mut Vec<PendingNode>,
+    ) -> Result<Cid> {
+        let pending = self.persist_prepared_node(cid, &node)?;
+        pending_nodes.push(pending);
+        Ok(cid)
+    }
+
+    fn persist_prepared_node(
+        &mut self,
+        cid: Cid,
+        node: &Node<Payload, ContentMetadata>,
+    ) -> Result<PendingNode> {
+        self.dag.storage.put(node).map_err(CrdtError::Graph)?;
+        self.dag
+            .register_prepared_node(cid, node)
+            .map_err(CrdtError::Graph)?;
+        Ok(PendingNode {
+            cid,
+            parents: node.parents().to_vec(),
+            metadata: node.metadata().clone(),
+        })
+    }
+
+    /// Get the latest parent nodes for the given genesis
+    fn validate_parent_genesis(&self, genesis: &Cid, parents: &[Cid]) -> Result<()> {
+        for parent in parents {
+            let parent_genesis = self.dag.get_genesis(parent).map_err(CrdtError::Graph)?;
+            if &parent_genesis != genesis {
+                return Err(CrdtError::Internal(format!(
+                    "Parent {parent} does not belong to genesis {genesis}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_and_merge(
+        &mut self,
+        genesis: &Cid,
+        pending_nodes: &mut Vec<PendingNode>,
+    ) -> Result<Option<Cid>> {
+        let heads = self.find_heads(genesis)?;
+
+        if heads.len() <= 1 {
+            return Ok(None);
+        }
+
+        let genesis_node = self
+            .dag
+            .get_node(genesis)
+            .map_err(CrdtError::Graph)?
+            .ok_or_else(|| CrdtError::Internal(format!("Genesis not found: {genesis}")))?;
+        let policy_type = genesis_node.metadata().policy_type();
+        let policy = self.create_policy(policy_type)?;
+
+        let merge_node =
+            self.resolver
+                .create_merge_node(&heads, &self.dag, *genesis, policy.as_ref())?;
+
+        self.validate_parent_genesis(genesis, &heads)?;
+
+        let (merge_cid, node) = self
+            .dag
+            .prepare_child_node(
+                merge_node.payload().clone(),
+                heads.clone(),
+                *genesis,
+                merge_node.metadata().clone(),
+            )
+            .map_err(CrdtError::Graph)?;
+        let pending = self.persist_prepared_node(merge_cid, &node)?;
+
+        let mut merge_op = Operation::new(
+            *genesis,
+            OperationType::Merge(merge_node.payload().clone()),
+            "auto-merge".to_string(),
+        );
+        merge_op.parents = heads;
+        if let Err(err) = self.state.apply(merge_op) {
+            self.dag
+                .rollback_pending_node(&pending.cid, &pending.parents);
+            return Err(err);
+        }
+
+        pending_nodes.push(pending);
+
+        Ok(Some(merge_cid))
+    }
+
+    fn find_heads(&self, genesis: &Cid) -> Result<Vec<Cid>> {
+        let nodes = self
+            .dag
+            .get_nodes_by_genesis(genesis)
+            .map_err(CrdtError::Graph)?;
+        if nodes.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let node_set: HashSet<Cid> = nodes.iter().copied().collect();
+        let mut parents_within = HashSet::new();
+
+        for cid in &nodes {
+            if let Some(node) = self.dag.get_node(cid).map_err(CrdtError::Graph)? {
+                for parent in node.parents() {
+                    if node_set.contains(parent) {
+                        parents_within.insert(*parent);
+                    }
+                }
+            }
+        }
+
+        Ok(nodes
+            .into_iter()
+            .filter(|cid| !parents_within.contains(cid))
+            .collect())
+    }
+
+    fn create_policy(&self, policy_type: &str) -> Result<Box<dyn MergePolicy<Payload>>> {
+        match policy_type {
+            "lww" => Ok(Box::new(LwwMergePolicy)),
+            other => Err(CrdtError::Internal(format!("Unknown policy type: {other}"))),
+        }
+    }
+
+    fn resolve_metadata_for_commit(
+        &self,
+        genesis: &Cid,
+        parents: &[Cid],
+        pending_nodes: &[PendingNode],
+    ) -> Result<ContentMetadata> {
+        if let Some(parent) = parents.first() {
+            if let Some(pending) = pending_nodes.iter().find(|pending| &pending.cid == parent) {
+                return Ok(pending.metadata.clone());
+            }
+            let node = self
+                .dag
+                .get_node(parent)
+                .map_err(CrdtError::Graph)?
+                .ok_or_else(|| CrdtError::Internal(format!("Parent node not found: {parent}")))?;
+            Ok(node.metadata().clone())
+        } else {
+            if let Some(pending) = pending_nodes.iter().find(|pending| &pending.cid == genesis) {
+                return Ok(pending.metadata.clone());
+            }
+            let genesis_node = self
+                .dag
+                .get_node(genesis)
+                .map_err(CrdtError::Graph)?
+                .ok_or_else(|| CrdtError::Internal(format!("Genesis not found: {genesis}")))?;
+            Ok(genesis_node.metadata().clone())
+        }
+    }
     fn node_characteristics(&self, cid: &Cid) -> Result<(bool, u64)> {
         let node = self
             .dag
@@ -354,7 +496,9 @@ mod tests {
     use crate::crdt::operation::{Operation, OperationType};
     use crate::crdt::storage::LeveldbStorage;
     use crate::graph::storage::LeveldbNodeStorage;
+    use std::cell::Cell;
     use tempfile::tempdir;
+    use ulid::Ulid;
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     #[serde(transparent)]
@@ -368,8 +512,9 @@ mod tests {
 
     fn setup_test_repo() -> (TestRepo, tempfile::TempDir) {
         let dir = tempdir().unwrap();
-        let op_storage = LeveldbStorage::open(dir.path().join("ops")).unwrap();
-        let node_storage = LeveldbNodeStorage::open(dir.path().join("nodes"));
+        let shared = SharedLeveldb::open(dir.path().join("store")).unwrap();
+        let op_storage = LeveldbStorage::new(shared.clone());
+        let node_storage = LeveldbNodeStorage::new(shared);
         let state = CrdtState::new(op_storage);
         let dag = DagGraph::new(node_storage);
         let repo = Repo::new(state, dag);
@@ -385,6 +530,62 @@ mod tests {
 
     fn sleep_for_ordering() {
         std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    struct FailingOperationStorage<S> {
+        inner: S,
+        fail_next: Cell<bool>,
+    }
+
+    impl<S> FailingOperationStorage<S> {
+        fn fail_on_first(inner: S) -> Self {
+            Self {
+                inner,
+                fail_next: Cell::new(true),
+            }
+        }
+    }
+
+    impl<S, ContentId, T> OperationStorage<ContentId, T> for FailingOperationStorage<S>
+    where
+        S: OperationStorage<ContentId, T>,
+    {
+        fn save_operation(&self, op: &Operation<ContentId, T>) -> crate::crdt::error::Result<()> {
+            if self.fail_next.replace(false) {
+                Err(CrdtError::Internal(
+                    "forced failure for testing".to_string(),
+                ))
+            } else {
+                self.inner.save_operation(op)
+            }
+        }
+
+        fn load_operations(
+            &self,
+            genesis: &ContentId,
+        ) -> crate::crdt::error::Result<Vec<Operation<ContentId, T>>> {
+            self.inner.load_operations(genesis)
+        }
+
+        fn get_operation(
+            &self,
+            op_id: &Ulid,
+        ) -> crate::crdt::error::Result<Option<Operation<ContentId, T>>> {
+            self.inner.get_operation(op_id)
+        }
+
+        fn delete_operation(&self, op_id: &Ulid) -> crate::crdt::error::Result<()> {
+            self.inner.delete_operation(op_id)
+        }
+    }
+
+    impl<S> SharedLeveldbAccess for FailingOperationStorage<S>
+    where
+        S: SharedLeveldbAccess,
+    {
+        fn shared_leveldb(&self) -> Option<Rc<SharedLeveldb>> {
+            self.inner.shared_leveldb()
+        }
     }
 
     #[test]
@@ -428,6 +629,40 @@ mod tests {
         assert_ne!(create_cid, update_cid);
     }
 
+    #[test]
+    fn test_create_operation_rolls_back_on_state_failure() {
+        let dir = tempdir().unwrap();
+        let shared = SharedLeveldb::open(dir.path().join("store")).unwrap();
+        let op_storage =
+            FailingOperationStorage::fail_on_first(LeveldbStorage::new(shared.clone()));
+        let node_storage = LeveldbNodeStorage::new(shared);
+        let state = CrdtState::new(op_storage);
+        let dag = DagGraph::new(node_storage);
+        let mut repo = Repo::new(state, dag);
+
+        let initial_genesis = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"rollback-test").unwrap(),
+        );
+        let op = make_test_operation(
+            initial_genesis,
+            OperationType::Create(TestPayload("should not persist".to_string())),
+        );
+        let op_id = op.id;
+
+        let result = repo.commit_operation(op);
+        assert!(result.is_err());
+
+        let node_map = repo.dag.storage.get_node_map().unwrap();
+        assert!(
+            node_map.is_empty(),
+            "expected DAG to be empty after rollback, found {node_map:?}"
+        );
+        assert!(
+            repo.state.get_operation(&op_id).unwrap().is_none(),
+            "operation was persisted despite failure"
+        );
+    }
     #[test]
     fn test_update_with_explicit_parent_is_respected() {
         let (mut repo, _) = setup_test_repo();
