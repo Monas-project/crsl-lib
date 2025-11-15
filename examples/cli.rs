@@ -9,6 +9,7 @@ use crsl_lib::crdt::{
 use crsl_lib::dasl::cid::ContentId;
 use crsl_lib::graph::{dag::DagGraph, storage::LeveldbNodeStorage};
 use crsl_lib::repo::Repo;
+use crsl_lib::storage::SharedLeveldb;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -63,12 +64,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     match cli.cmd {
         Commands::Init { path } => {
             std::fs::create_dir_all(&path)?;
-            std::fs::create_dir_all(path.join("ops"))?;
-            std::fs::create_dir_all(path.join("nodes"))?;
+            std::fs::create_dir_all(path.join("store"))?;
 
             std::fs::write(path.join(".crsl"), "")?;
 
-            println!("Initialized CRSL repository at {path:?}");
+            println!("Initialized CRSL repository at {path:?} (single LevelDB store)");
         }
         other_command => {
             let repo_path = Path::new(DEFAULT_REPO_PATH);
@@ -215,10 +215,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn open_repo(repo_path: &Path) -> Result<CliRepo, Box<dyn Error>> {
-    let op_storage = LeveldbStorage::open(repo_path.join("ops"))?;
-    let node_storage = LeveldbNodeStorage::open(repo_path.join("nodes"));
-    let state = CrdtState::new(op_storage);
-    let dag = DagGraph::new(node_storage);
+    let shared = SharedLeveldb::open(repo_path.join("store"))?;
+    let state = CrdtState::new(LeveldbStorage::new(shared.clone()));
+    let dag = DagGraph::new(LeveldbNodeStorage::new(shared));
     Ok(Repo::new(state, dag))
 }
 
