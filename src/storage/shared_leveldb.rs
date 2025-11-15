@@ -13,6 +13,8 @@ pub enum BatchError {
 pub struct SharedLeveldb {
     db: RefCell<Database>,
     active_batch: RefCell<Option<WriteBatch>>,
+    #[cfg(test)]
+    commit_fail_status: RefCell<Option<Status>>,
 }
 
 impl SharedLeveldb {
@@ -25,6 +27,8 @@ impl SharedLeveldb {
         Ok(Rc::new(Self {
             db: RefCell::new(db),
             active_batch: RefCell::new(None),
+            #[cfg(test)]
+            commit_fail_status: RefCell::new(None),
         }))
     }
 
@@ -45,6 +49,10 @@ impl SharedLeveldb {
         let Some(batch) = slot.take() else {
             return Ok(());
         };
+        #[cfg(test)]
+        if let Some(status) = self.commit_fail_status.borrow_mut().take() {
+            return Err(status);
+        }
         self.db.borrow_mut().write(batch, true)
     }
 
@@ -88,6 +96,13 @@ impl Drop for LeveldbBatchGuard<'_> {
 
 pub trait SharedLeveldbAccess {
     fn shared_leveldb(&self) -> Option<Rc<SharedLeveldb>>;
+}
+
+#[cfg(test)]
+impl SharedLeveldb {
+    pub fn inject_commit_failure(&self, status: Status) {
+        self.commit_fail_status.borrow_mut().replace(status);
+    }
 }
 
 #[cfg(test)]

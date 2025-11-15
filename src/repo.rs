@@ -495,7 +495,9 @@ mod tests {
     use super::*;
     use crate::crdt::operation::{Operation, OperationType};
     use crate::crdt::storage::LeveldbStorage;
+    use crate::graph::error::GraphError;
     use crate::graph::storage::LeveldbNodeStorage;
+    use rusty_leveldb::{Status, StatusCode};
     use std::cell::Cell;
     use tempfile::tempdir;
     use ulid::Ulid;
@@ -538,11 +540,22 @@ mod tests {
     }
 
     impl<S> FailingOperationStorage<S> {
+        fn new(inner: S) -> Self {
+            Self {
+                inner,
+                fail_next: Cell::new(false),
+            }
+        }
+
         fn fail_on_first(inner: S) -> Self {
             Self {
                 inner,
                 fail_next: Cell::new(true),
             }
+        }
+
+        fn fail_on_next(&self) {
+            self.fail_next.set(true);
         }
     }
 
@@ -588,6 +601,56 @@ mod tests {
         }
     }
 
+    struct FailingNodeStorage<S> {
+        inner: S,
+        fail_next_put: Cell<bool>,
+    }
+
+    impl<S> FailingNodeStorage<S> {
+        fn fail_on_first_put(inner: S) -> Self {
+            Self {
+                inner,
+                fail_next_put: Cell::new(true),
+            }
+        }
+    }
+
+    impl<S, P, M> NodeStorage<P, M> for FailingNodeStorage<S>
+    where
+        S: NodeStorage<P, M>,
+    {
+        fn get(&self, content_id: &Cid) -> crate::graph::error::Result<Option<Node<P, M>>> {
+            self.inner.get(content_id)
+        }
+
+        fn put(&self, node: &Node<P, M>) -> crate::graph::error::Result<()> {
+            if self.fail_next_put.replace(false) {
+                Err(GraphError::Internal(
+                    "injected node storage failure".to_string(),
+                ))
+            } else {
+                self.inner.put(node)
+            }
+        }
+
+        fn delete(&self, content_id: &Cid) -> crate::graph::error::Result<()> {
+            self.inner.delete(content_id)
+        }
+
+        fn get_node_map(&self) -> crate::graph::error::Result<HashMap<Cid, Vec<Cid>>> {
+            self.inner.get_node_map()
+        }
+    }
+
+    impl<S> SharedLeveldbAccess for FailingNodeStorage<S>
+    where
+        S: SharedLeveldbAccess,
+    {
+        fn shared_leveldb(&self) -> Option<Rc<SharedLeveldb>> {
+            self.inner.shared_leveldb()
+        }
+    }
+
     #[test]
     fn test_create_operation() {
         let (mut repo, _) = setup_test_repo();
@@ -602,6 +665,45 @@ mod tests {
 
         assert!(repo.latest(&cid).is_some());
         assert_eq!(repo.latest(&cid).unwrap(), cid);
+    }
+
+    #[test]
+    fn test_create_operation_fails_when_node_storage_errors() {
+        let dir = tempdir().unwrap();
+        let shared = SharedLeveldb::open(dir.path().join("store")).unwrap();
+        let op_storage = LeveldbStorage::new(shared.clone());
+        let node_storage =
+            FailingNodeStorage::fail_on_first_put(LeveldbNodeStorage::new(shared.clone()));
+        let state = CrdtState::new(op_storage);
+        let dag = DagGraph::new(node_storage);
+        let mut repo = Repo::new(state, dag);
+
+        let initial_genesis = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"create-fail").unwrap(),
+        );
+        let op = make_test_operation(
+            initial_genesis,
+            OperationType::Create(TestPayload("should fail".to_string())),
+        );
+        let op_id = op.id;
+
+        let err = repo.commit_operation(op).unwrap_err();
+        match err {
+            CrdtError::Graph(GraphError::Internal(message)) => {
+                assert!(message.contains("injected node storage failure"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        assert!(
+            repo.state.get_operation(&op_id).unwrap().is_none(),
+            "operation should not be persisted on failure"
+        );
+        assert!(
+            repo.dag.storage.get_node_map().unwrap().is_empty(),
+            "dag should remain empty when node storage fails"
+        );
     }
 
     #[test]
@@ -627,6 +729,36 @@ mod tests {
         assert!(repo.latest(&create_cid).is_some());
         assert_eq!(repo.latest(&create_cid).unwrap(), update_cid);
         assert_ne!(create_cid, update_cid);
+    }
+
+    #[test]
+    fn test_update_operation_without_existing_head_fails() {
+        let (mut repo, _) = setup_test_repo();
+        let initial_genesis = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"update-no-head").unwrap(),
+        );
+        let op = make_test_operation(
+            initial_genesis,
+            OperationType::Update(TestPayload("orphaned".to_string())),
+        );
+
+        let err = repo.commit_operation(op).unwrap_err();
+        match err {
+            CrdtError::Internal(message) => {
+                assert!(message.contains("No head available"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let stored_ops = repo
+            .state
+            .get_operations_by_genesis(&initial_genesis)
+            .unwrap();
+        assert!(
+            stored_ops.is_empty(),
+            "update should not persist when no head exists"
+        );
     }
 
     #[test]
@@ -661,6 +793,119 @@ mod tests {
         assert!(
             repo.state.get_operation(&op_id).unwrap().is_none(),
             "operation was persisted despite failure"
+        );
+    }
+
+    #[test]
+    fn test_create_operation_rolls_back_when_batch_commit_fails() {
+        let (mut repo, _) = setup_test_repo();
+        let shared = repo
+            .state
+            .storage()
+            .shared_leveldb()
+            .expect("shared leveldb instance");
+        shared.inject_commit_failure(Status::new(StatusCode::IOError, "forced commit failure"));
+
+        let initial_genesis = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"batch-failure").unwrap(),
+        );
+        let op = make_test_operation(
+            initial_genesis,
+            OperationType::Create(TestPayload("batch-fail".to_string())),
+        );
+        let op_id = op.id;
+
+        let err = repo.commit_operation(op).unwrap_err();
+        match err {
+            CrdtError::Storage(status) => {
+                assert_eq!(status.code, StatusCode::IOError);
+                assert!(status.err.contains("forced commit failure"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        assert!(
+            repo.state.get_operation(&op_id).unwrap().is_none(),
+            "operation should not persist when batch commit fails"
+        );
+        assert!(
+            repo.dag.storage.get_node_map().unwrap().is_empty(),
+            "dag should be rolled back when batch commit fails"
+        );
+    }
+
+    #[test]
+    fn test_rollback_pending_nodes_restores_heads_after_failure() {
+        let dir = tempdir().unwrap();
+        let shared = SharedLeveldb::open(dir.path().join("store")).unwrap();
+        let op_storage = FailingOperationStorage::new(LeveldbStorage::new(shared.clone()));
+        let node_storage = LeveldbNodeStorage::new(shared);
+        let state = CrdtState::new(op_storage);
+        let dag = DagGraph::new(node_storage);
+        let mut repo = Repo::new(state, dag);
+
+        let seed = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"rollback-pending").unwrap(),
+        );
+        let create = make_test_operation(seed, OperationType::Create(TestPayload("root".into())));
+        let genesis = repo.commit_operation(create).unwrap();
+
+        let mut branch1 = make_test_operation(
+            genesis,
+            OperationType::Update(TestPayload("branch-1".into())),
+        );
+        branch1.parents.push(genesis);
+        let branch1_cid = repo.commit_operation(branch1).unwrap();
+        sleep_for_ordering();
+
+        let mut branch2 = make_test_operation(
+            genesis,
+            OperationType::Update(TestPayload("branch-2".into())),
+        );
+        branch2.parents.push(genesis);
+        let branch2_cid = repo.commit_operation(branch2).unwrap();
+
+        let original_heads = repo.find_heads(&genesis).unwrap();
+        assert_eq!(original_heads.len(), 2);
+        assert!(original_heads.contains(&branch1_cid));
+        assert!(original_heads.contains(&branch2_cid));
+
+        repo.state.storage().fail_on_next();
+
+        let update = make_test_operation(
+            genesis,
+            OperationType::Update(TestPayload("should-rollback".into())),
+        );
+        let err = repo.commit_operation(update).unwrap_err();
+        match err {
+            CrdtError::Internal(message) => {
+                assert!(message.contains("forced failure for testing"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let heads_after = repo.find_heads(&genesis).unwrap();
+        assert_eq!(heads_after.len(), 2);
+        assert!(heads_after.contains(&branch1_cid));
+        assert!(heads_after.contains(&branch2_cid));
+
+        let ops = repo.state.get_operations_by_genesis(&genesis).unwrap();
+        assert_eq!(
+            ops.len(),
+            3,
+            "rollback should leave only the original create and two branch updates"
+        );
+
+        let node_map = repo.dag.storage.get_node_map().unwrap();
+        assert!(node_map.contains_key(&genesis));
+        assert!(node_map.contains_key(&branch1_cid));
+        assert!(node_map.contains_key(&branch2_cid));
+        assert_eq!(
+            node_map.len(),
+            3,
+            "no additional DAG nodes should remain after rollback"
         );
     }
     #[test]
@@ -802,6 +1047,49 @@ mod tests {
         assert!(repo.latest(&create_cid).is_some());
         assert_eq!(repo.latest(&create_cid).unwrap(), delete_cid);
         assert_ne!(create_cid, delete_cid);
+    }
+
+    #[test]
+    fn test_delete_operation_without_existing_payload_fails() {
+        let (mut repo, _) = setup_test_repo();
+        let (genesis_cid, genesis_node) = repo
+            .dag
+            .prepare_genesis_node(
+                TestPayload("dangling".to_string()),
+                ContentMetadata::default(),
+            )
+            .unwrap();
+        repo.dag.storage.put(&genesis_node).unwrap();
+        repo.dag
+            .register_prepared_node(genesis_cid, &genesis_node)
+            .unwrap();
+
+        let op = make_test_operation(genesis_cid, OperationType::Delete);
+        let op_id = op.id;
+
+        let err = repo.commit_operation(op).unwrap_err();
+        match err {
+            CrdtError::Internal(message) => {
+                assert!(message.contains("content must exist"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        assert!(
+            repo.state.get_operation(&op_id).unwrap().is_none(),
+            "delete operation should not be stored when payload is missing"
+        );
+        assert!(
+            repo.state
+                .get_operations_by_genesis(&genesis_cid)
+                .unwrap()
+                .is_empty(),
+            "operation history should remain empty on failure"
+        );
+        assert!(
+            repo.dag.get_node(&genesis_cid).unwrap().is_some(),
+            "existing genesis node should remain after failed delete"
+        );
     }
 
     #[test]
