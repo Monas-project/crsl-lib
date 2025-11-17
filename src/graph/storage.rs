@@ -1,12 +1,13 @@
 use crate::dasl::node::Node;
 use crate::graph::error::{GraphError, Result};
+use crate::storage::{SharedLeveldb, SharedLeveldbAccess};
 use cid::Cid;
-use rusty_leveldb::{LdbIterator, Options, DB as Database};
-use std::cell::RefCell;
+use rusty_leveldb::LdbIterator;
 use std::collections::HashMap;
 use std::path::Path;
-use std::path::PathBuf;
+use std::rc::Rc;
 
+/// Minimal interface required for persisting DAG nodes.
 pub trait NodeStorage<P, M> {
     fn get(&self, content_id: &Cid) -> Result<Option<Node<P, M>>>;
     fn put(&self, node: &Node<P, M>) -> Result<()>;
@@ -14,45 +15,80 @@ pub trait NodeStorage<P, M> {
     fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>>;
 }
 
+/// [`NodeStorage`] implementation backed by a shared LevelDB instance.
 pub struct LeveldbNodeStorage<P, M> {
-    db: RefCell<Database>,
-    path: PathBuf,
+    shared: Rc<SharedLeveldb>,
     _marker: std::marker::PhantomData<(P, M)>,
 }
 
 impl<P, M> Clone for LeveldbNodeStorage<P, M> {
     fn clone(&self) -> Self {
-        let opts = Options {
-            create_if_missing: true,
-            ..Default::default()
-        };
-        let db = Database::open(&self.path, opts).expect("Failed to clone database");
         Self {
-            db: RefCell::new(db),
-            path: self.path.clone(),
+            shared: self.shared.clone(),
             _marker: std::marker::PhantomData,
         }
     }
 }
 
 impl<P, M> LeveldbNodeStorage<P, M> {
+    /// Opens LevelDB and wraps it in a shared handle.
     pub fn open<Pth: AsRef<Path>>(path: Pth) -> Self {
-        let opts = Options {
-            create_if_missing: true,
-            ..Default::default()
-        };
-        let db = Database::open(path.as_ref(), opts).unwrap();
+        let shared = SharedLeveldb::open(path).expect("Failed to open LevelDB");
+        Self::new(shared)
+    }
+
+    /// Creates the storage from an existing [`SharedLeveldb`] handle.
+    pub fn new(shared: Rc<SharedLeveldb>) -> Self {
         Self {
-            db: RefCell::new(db),
-            path: path.as_ref().to_path_buf(),
+            shared,
             _marker: std::marker::PhantomData,
         }
     }
+
+    /// Builds the LevelDB key for nodes, prefixed with the `0x10` namespace.
     fn make_key(cid: &Cid) -> Vec<u8> {
         let mut v = Vec::with_capacity(1 + cid.to_bytes().len());
         v.push(0x10);
         v.extend_from_slice(&cid.to_bytes());
         v
+    }
+
+    /// Writes either into the active batch, or directly into the DB if no batch is active.
+    fn write_bytes(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        if self
+            .shared
+            .with_active_batch(|batch| batch.put(key, value))
+            .is_none()
+        {
+            self.shared
+                .db()
+                .borrow_mut()
+                .put(key, value)
+                .map_err(GraphError::Storage)?;
+        }
+        Ok(())
+    }
+
+    /// Deletes the given key, falling back to the DB when no batch is active.
+    fn delete_key(&self, key: &[u8]) -> Result<()> {
+        if self
+            .shared
+            .with_active_batch(|batch| batch.delete(key))
+            .is_none()
+        {
+            self.shared
+                .db()
+                .borrow_mut()
+                .delete(key)
+                .map_err(GraphError::Storage)?;
+        }
+        Ok(())
+    }
+}
+
+impl<P, M> SharedLeveldbAccess for LeveldbNodeStorage<P, M> {
+    fn shared_leveldb(&self) -> Option<Rc<SharedLeveldb>> {
+        Some(self.shared.clone())
     }
 }
 
@@ -63,7 +99,7 @@ where
 {
     fn get(&self, cid: &Cid) -> Result<Option<Node<P, M>>> {
         let key = Self::make_key(cid);
-        match self.db.borrow_mut().get(&key) {
+        match self.shared.db().borrow_mut().get(&key) {
             Some(raw) => {
                 let node =
                     Node::from_bytes(&raw).map_err(|e| GraphError::NodeOperation(e.to_string()))?;
@@ -81,26 +117,20 @@ where
             .content_id()
             .map_err(|e| GraphError::NodeOperation(e.to_string()))?;
         let key = Self::make_key(&cid);
-        self.db
-            .borrow_mut()
-            .put(&key, &bytes)
-            .map_err(GraphError::Storage)?;
-        Ok(())
+        self.write_bytes(&key, &bytes)
     }
 
     fn delete(&self, cid: &Cid) -> Result<()> {
         let key = Self::make_key(cid);
-        self.db
-            .borrow_mut()
-            .delete(&key)
-            .map_err(GraphError::Storage)?;
-        Ok(())
+        self.delete_key(&key)
     }
 
+    /// Walks all nodes and constructs an adjacency map (parent → children).
     fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
         let mut node_map = HashMap::new();
         let mut iter = self
-            .db
+            .shared
+            .db()
             .borrow_mut()
             .new_iter()
             .map_err(GraphError::Storage)?;
@@ -111,17 +141,12 @@ where
         while iter.valid() {
             iter.current(&mut key, &mut value);
             if !key.is_empty() && key[0] == 0x10 {
-                match Node::<P, M>::from_bytes(&value) {
-                    Ok(node) => {
-                        let node_cid = node
-                            .content_id()
-                            .map_err(|e| GraphError::NodeOperation(e.to_string()))?;
-                        node_map.insert(node_cid, node.parents().to_vec());
-                    }
-                    Err(e) => {
-                        println!("Error deserializing node: {e}");
-                    }
-                }
+                let node = Node::<P, M>::from_bytes(&value)
+                    .map_err(|e| GraphError::NodeOperation(e.to_string()))?;
+                let node_cid = node
+                    .content_id()
+                    .map_err(|e| GraphError::NodeOperation(e.to_string()))?;
+                node_map.insert(node_cid, node.parents().to_vec());
             }
             iter.advance();
         }
@@ -136,11 +161,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempfile::tempdir;
 
+    /// Creates a simple test node helper.
     fn create_test_node(payload: &str) -> Node<String, String> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs();
+            .as_nanos() as u64;
         Node::new_genesis(payload.to_string(), timestamp, "metadata".to_string())
     }
 

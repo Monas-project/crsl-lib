@@ -4,6 +4,7 @@ use crate::crdt::reducer::Reducer;
 use crate::crdt::storage::OperationStorage;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use ulid::Ulid;
 /// A generic CRDT state container that manages operations on content.
 ///
 /// `CrdtState` provides a high-level interface for applying operations to content
@@ -39,6 +40,10 @@ where
             _marker: PhantomData,
         }
     }
+
+    pub fn storage(&self) -> &S {
+        &self.storage
+    }
     /// Applies an operation to the CRDT state without validation.
     ///
     /// This method directly saves the operation to storage without checking its validity.
@@ -68,12 +73,12 @@ where
             self.apply(op)
         } else {
             Err(CrdtError::Validation(ValidationError::MissingCreate(
-                format!("No create operation found for target: {:?}", op.target),
+                format!("No create operation found for genesis: {:?}", op.genesis),
             )))
         }
     }
-    pub fn get_state(&self, target: &ContentId, genesis: &ContentId) -> Option<T> {
-        let ops = self.storage.load_operations(target, genesis).ok()?;
+    pub fn get_state(&self, genesis: &ContentId) -> Option<T> {
+        let ops = self.storage.load_operations(genesis).ok()?;
         R::reduce(&ops)
     }
 
@@ -81,7 +86,15 @@ where
         &self,
         genesis: &ContentId,
     ) -> Result<Vec<Operation<ContentId, T>>> {
-        self.storage.load_operations_by_genesis(genesis)
+        self.storage.load_operations(genesis)
+    }
+
+    pub fn get_operation(&self, op_id: &Ulid) -> Result<Option<Operation<ContentId, T>>> {
+        self.storage.get_operation(op_id)
+    }
+
+    pub fn delete_operation(&self, op_id: &Ulid) -> Result<()> {
+        self.storage.delete_operation(op_id)
     }
 
     /// Validates whether an operation is logically valid to apply.
@@ -100,8 +113,8 @@ where
     /// * `false` - If the operation would violate logical constraints
     pub fn validate_operation(&self, op: &Operation<ContentId, T>) -> Result<bool> {
         match &op.kind {
-            OperationType::Update(_) | OperationType::Delete => {
-                let ops = self.storage.load_operations(&op.target, &op.genesis)?;
+            OperationType::Update(_) | OperationType::Delete | OperationType::Merge(_) => {
+                let ops = self.storage.load_operations(&op.genesis)?;
                 Ok(ops
                     .iter()
                     .any(|o| matches!(o.kind, OperationType::Create(_))))
@@ -124,17 +137,13 @@ mod tests {
     #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
     struct DummyPayload(String);
 
+    /// Helper for constructing operations with deterministic timestamps.
     fn make_op(
         id: u64,
         ts: u64,
         kind: OperationType<DummyPayload>,
     ) -> Operation<DummyContentId, DummyPayload> {
-        let mut op = Operation::new_with_genesis(
-            DummyContentId(id.to_string()),
-            DummyContentId(id.to_string()),
-            kind,
-            "tester".into(),
-        );
+        let mut op = Operation::new(DummyContentId(id.to_string()), kind, "tester".into());
         op.timestamp = ts;
         op
     }
@@ -151,10 +160,7 @@ mod tests {
         state.apply(op).unwrap();
 
         assert_eq!(
-            state.get_state(
-                &DummyContentId("1".to_string()),
-                &DummyContentId("1".to_string())
-            ),
+            state.get_state(&DummyContentId("1".to_string())),
             Some(DummyPayload("A".to_string()))
         );
     }
@@ -173,10 +179,7 @@ mod tests {
         state.apply(op2).unwrap();
 
         assert_eq!(
-            state.get_state(
-                &DummyContentId("1".to_string()),
-                &DummyContentId("1".to_string())
-            ),
+            state.get_state(&DummyContentId("1".to_string())),
             Some(DummyPayload("B".to_string()))
         );
     }
@@ -195,13 +198,7 @@ mod tests {
         state.apply(op1).unwrap();
         state.apply(op2).unwrap();
         state.apply(op3).unwrap();
-        assert_eq!(
-            state.get_state(
-                &DummyContentId("1".to_string()),
-                &DummyContentId("1".to_string())
-            ),
-            None
-        );
+        assert_eq!(state.get_state(&DummyContentId("1".to_string())), None);
     }
 
     #[test]
@@ -234,10 +231,7 @@ mod tests {
         state.apply_with_validation(op2).unwrap();
 
         assert_eq!(
-            state.get_state(
-                &DummyContentId("1".to_string()),
-                &DummyContentId("1".to_string())
-            ),
+            state.get_state(&DummyContentId("1".to_string())),
             Some(DummyPayload("B".to_string()))
         );
     }
@@ -265,8 +259,7 @@ mod tests {
 
         // Simulate an update coming from another genesis (different series) but same target.
         let fake_genesis = DummyContentId("DIFFERENT".into());
-        let update = Operation::new_with_genesis(
-            DummyContentId("X".into()),
+        let update = Operation::new(
             fake_genesis,
             OperationType::Update(DummyPayload("B".into())),
             "u1".into(),
@@ -275,7 +268,7 @@ mod tests {
 
         // Should only get operations with matching genesis, so expect "A"
         assert_eq!(
-            state.get_state(&DummyContentId("X".into()), &DummyContentId("X".into())),
+            state.get_state(&DummyContentId("X".into())),
             Some(DummyPayload("A".into()))
         );
     }
@@ -288,40 +281,32 @@ mod tests {
                 .unwrap();
         let state: CrdtState<DummyContentId, DummyPayload, _, LwwReducer> = CrdtState::new(storage);
 
-        let target = DummyContentId("X".into());
         let primary_genesis = DummyContentId("X".into());
         let alt_genesis = DummyContentId("ALT".into());
 
-        let mut primary_create = Operation::new_with_genesis(
-            target.clone(),
+        let mut primary_create = Operation::new(
             primary_genesis.clone(),
             OperationType::Create(DummyPayload("A".into())),
             "u1".into(),
         );
         primary_create.timestamp = 100;
 
-        let mut alt_create = Operation::new_with_genesis(
-            target.clone(),
+        let mut alt_create = Operation::new(
             alt_genesis.clone(),
             OperationType::Create(DummyPayload("B".into())),
             "u2".into(),
         );
         alt_create.timestamp = 150;
 
-        let mut alt_update = Operation::new_with_genesis(
-            target.clone(),
+        let mut alt_update = Operation::new(
             alt_genesis.clone(),
             OperationType::Update(DummyPayload("C".into())),
             "u2".into(),
         );
         alt_update.timestamp = 300;
 
-        let mut primary_delete = Operation::new_with_genesis(
-            target.clone(),
-            primary_genesis.clone(),
-            OperationType::Delete,
-            "u1".into(),
-        );
+        let mut primary_delete =
+            Operation::new(primary_genesis.clone(), OperationType::Delete, "u1".into());
         primary_delete.timestamp = 400;
 
         state.apply(primary_create).unwrap();
@@ -329,10 +314,10 @@ mod tests {
         state.apply(alt_update.clone()).unwrap();
         state.apply(primary_delete).unwrap();
 
-        assert_eq!(state.get_state(&target, &primary_genesis), None);
+        assert_eq!(state.get_state(&primary_genesis), None);
 
         assert_eq!(
-            state.get_state(&target, &alt_genesis),
+            state.get_state(&alt_genesis),
             Some(DummyPayload("C".into()))
         );
 
