@@ -24,6 +24,7 @@ use crsl_lib::{
     },
     graph::{dag::DagGraph, storage::LeveldbNodeStorage as NodeStorage},
     repo::Repo,
+    storage::SharedLeveldb,
 };
 use tempfile::tempdir;
 use cid::Cid;
@@ -34,10 +35,9 @@ struct Content(String);
 fn main() {
     // Initialize storage
     let tmp = tempdir().expect("tmp dir");
-    let op_store = OpStore::open(tmp.path().join("ops")).unwrap();
-    let node_store = NodeStorage::open(tmp.path().join("nodes"));
-    let state = CrdtState::new(op_store);
-    let dag = DagGraph::new(node_store);
+    let shared = SharedLeveldb::open(tmp.path().join("store")).unwrap();
+    let state = CrdtState::new(OpStore::new(shared.clone()));
+    let dag = DagGraph::new(NodeStorage::new(shared));
     let mut repo = Repo::new(state, dag);
 
     // Create a content ID (in practice, you'd use a proper CID)

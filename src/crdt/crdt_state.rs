@@ -4,6 +4,7 @@ use crate::crdt::reducer::Reducer;
 use crate::crdt::storage::OperationStorage;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use ulid::Ulid;
 /// A generic CRDT state container that manages operations on content.
 ///
 /// `CrdtState` provides a high-level interface for applying operations to content
@@ -38,6 +39,10 @@ where
             storage,
             _marker: PhantomData,
         }
+    }
+
+    pub fn storage(&self) -> &S {
+        &self.storage
     }
     /// Applies an operation to the CRDT state without validation.
     ///
@@ -84,6 +89,14 @@ where
         self.storage.load_operations(genesis)
     }
 
+    pub fn get_operation(&self, op_id: &Ulid) -> Result<Option<Operation<ContentId, T>>> {
+        self.storage.get_operation(op_id)
+    }
+
+    pub fn delete_operation(&self, op_id: &Ulid) -> Result<()> {
+        self.storage.delete_operation(op_id)
+    }
+
     /// Validates whether an operation is logically valid to apply.
     ///
     /// This method performs the following checks:
@@ -124,6 +137,7 @@ mod tests {
     #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
     struct DummyPayload(String);
 
+    /// Helper for constructing operations with deterministic timestamps.
     fn make_op(
         id: u64,
         ts: u64,

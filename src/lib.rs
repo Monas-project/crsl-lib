@@ -4,3 +4,4 @@ pub mod dasl;
 pub mod graph;
 pub mod masl;
 pub mod repo;
+pub mod storage;
