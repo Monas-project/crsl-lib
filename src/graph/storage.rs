@@ -166,7 +166,7 @@ mod tests {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs();
+            .as_nanos() as u64;
         Node::new_genesis(payload.to_string(), timestamp, "metadata".to_string())
     }
 

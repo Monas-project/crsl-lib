@@ -193,7 +193,7 @@ where
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(GraphError::Timestamp)
-            .map(|d| d.as_secs())
+            .map(|d| d.as_nanos() as u64)
     }
 
     /// Check if adding an edge (new node with parents) would create a cycle
