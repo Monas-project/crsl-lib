@@ -2,19 +2,19 @@ use crate::crdt::error::{CrdtError, Result};
 use crate::crdt::operation::Operation;
 use bincode;
 use rusty_leveldb::{LdbIterator, Options, DB as Database};
-use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::path::Path;
+use std::sync::Mutex;
 use ulid::Ulid;
 
-pub trait OperationStorage<ContentId, T> {
+pub trait OperationStorage<ContentId, T>: Send + Sync {
     fn save_operation(&self, op: &Operation<ContentId, T>) -> Result<()>;
     fn load_operations(&self, genesis: &ContentId) -> Result<Vec<Operation<ContentId, T>>>;
     fn get_operation(&self, op_id: &Ulid) -> Result<Option<Operation<ContentId, T>>>;
 }
 
 pub struct LeveldbStorage<ContentId, T> {
-    db: RefCell<Database>,
+    db: Mutex<Database>,
     _marker: PhantomData<(ContentId, T)>,
 }
 
@@ -26,7 +26,7 @@ impl<ContentId, T> LeveldbStorage<ContentId, T> {
         };
         let db = Database::open(path, opts).map_err(CrdtError::Storage)?;
         Ok(LeveldbStorage {
-            db: RefCell::new(db),
+            db: Mutex::new(db),
             _marker: PhantomData,
         })
     }
@@ -41,23 +41,27 @@ impl<ContentId, T> LeveldbStorage<ContentId, T> {
 
 impl<ContentId, T> OperationStorage<ContentId, T> for LeveldbStorage<ContentId, T>
 where
-    ContentId: serde::Serialize + for<'de> serde::Deserialize<'de> + PartialEq + std::fmt::Debug,
-    T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug,
+    ContentId:
+        serde::Serialize + for<'de> serde::Deserialize<'de> + PartialEq + std::fmt::Debug + Send + Sync,
+    T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug + Send + Sync,
 {
     fn save_operation(&self, op: &Operation<ContentId, T>) -> Result<()> {
         let key = Self::make_key(&op.id);
         let value = bincode::serde::encode_to_vec(op, bincode::config::standard())?;
-        self.db.borrow_mut().put(&key, &value)?;
+        self.db
+            .lock()
+            .map_err(|e| CrdtError::Internal(format!("Lock poisoned: {}", e)))?
+            .put(&key, &value)?;
         Ok(())
     }
 
     fn load_operations(&self, genesis: &ContentId) -> Result<Vec<Operation<ContentId, T>>> {
         let mut result = Vec::new();
-        let mut iter = self
+        let mut db = self
             .db
-            .borrow_mut()
-            .new_iter()
-            .map_err(CrdtError::Storage)?;
+            .lock()
+            .map_err(|e| CrdtError::Internal(format!("Lock poisoned: {}", e)))?;
+        let mut iter = db.new_iter().map_err(CrdtError::Storage)?;
         // todo: Implement efficient search methods
         iter.seek_to_first();
         let mut key = Vec::new();
@@ -81,7 +85,12 @@ where
 
     fn get_operation(&self, op_id: &Ulid) -> Result<Option<Operation<ContentId, T>>> {
         let key = Self::make_key(op_id);
-        match self.db.borrow_mut().get(&key) {
+        match self
+            .db
+            .lock()
+            .map_err(|e| CrdtError::Internal(format!("Lock poisoned: {}", e)))?
+            .get(&key)
+        {
             Some(raw) => {
                 let (op, _) = bincode::serde::decode_from_slice::<Operation<ContentId, T>, _>(
                     &raw,

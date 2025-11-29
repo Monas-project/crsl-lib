@@ -6,8 +6,10 @@ CRSL is a Rust library for content versioning and CRDT (Conflict-free Replicated
 
 - **Content Versioning**: Content creation, update, deletion, and history management
 - **CRDT Support**: Conflict resolution through Last-Write-Wins (LWW) reducer
+- **Auto-Merge**: Automatic conflict resolution when multiple heads exist
 - **DAG (Directed Acyclic Graph)**: Efficient version history management
 - **LevelDB Storage**: High-performance persistent storage
+- **Thread-Safe**: Safe to use in async/await environments with `Mutex`-based storage
 - **CID (Content Identifier)**: IPFS-compatible content identifiers
 
 ## 🛠️ Usage
@@ -105,11 +107,17 @@ crsl-lib/
 │   │   ├── crdt_state.rs  # CRDT state management
 │   │   ├── operation.rs   # Operation definitions
 │   │   ├── reducer.rs     # LWW reducer
-│   │   ├── storage.rs     # Operation storage
+│   │   ├── storage.rs     # Operation storage (thread-safe)
 │   │   └── error.rs       # Error definitions
+│   ├── convergence/       # Conflict resolution
+│   │   ├── resolver.rs    # Merge orchestration
+│   │   ├── policy.rs      # MergePolicy trait
+│   │   ├── policies/      # Policy implementations
+│   │   │   └── lww.rs     # Last-Write-Wins policy
+│   │   └── metadata.rs    # Content metadata
 │   ├── graph/             # DAG graph implementation
 │   │   ├── dag.rs         # DAG graph management
-│   │   ├── storage.rs     # Node storage
+│   │   ├── storage.rs     # Node storage (thread-safe)
 │   │   └── error.rs       # Graph errors
 │   ├── dasl/              # DASL (Distributed Application Storage Layer)
 │   ├── masl/              # MASL (Multi-Agent Storage Layer)
@@ -183,6 +191,11 @@ cargo doc --open
 - Conflict resolution through LWW reducer
 - Integration with operation storage
 
+### Convergence (`src/convergence/`)
+- **MergePolicy trait**: Customizable merge strategies
+- **LwwMergePolicy**: Last-Write-Wins merge implementation
+- **ConflictResolver**: Automatic merge node creation
+
 ### DAG Graph (`src/graph/dag.rs`)
 - DAG management for version history
 - Node addition, retrieval, and history tracking
@@ -191,12 +204,19 @@ cargo doc --open
 ### Repository (`src/repo.rs`)
 - Integration of CRDT State and DAG Graph
 - Operation commit and history management
+- Auto-merge when multiple heads exist
 - High-level API provision
 
 ### Operations (`src/crdt/operation.rs`)
 - Create: New content creation
 - Update: Content updates
 - Delete: Content deletion
+- Merge: Automatic merge operations
+
+### Thread Safety
+- `LeveldbStorage` and `LeveldbNodeStorage` use `Mutex` internally
+- `OperationStorage` and `NodeStorage` traits require `Send + Sync`
+- Safe to use with `Arc<Mutex<Repo>>` in async/await environments
 
 ## 📄 License
 

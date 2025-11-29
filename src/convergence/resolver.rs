@@ -117,13 +117,12 @@ mod tests {
     use crate::graph::storage::NodeStorage;
     use multihash::Multihash;
     use serde::{Deserialize, Serialize};
-    use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]
     struct MemoryNodeStorage<P, M> {
-        nodes: Rc<RefCell<HashMap<Cid, Node<P, M>>>>,
+        nodes: Arc<Mutex<HashMap<Cid, Node<P, M>>>>,
     }
 
     impl<P, M> MemoryNodeStorage<P, M>
@@ -135,18 +134,18 @@ mod tests {
             let cid = node
                 .content_id()
                 .map_err(|e| GraphError::NodeOperation(e.to_string()))?;
-            self.nodes.borrow_mut().insert(cid, node.clone());
+            self.nodes.lock().unwrap().insert(cid, node.clone());
             Ok(())
         }
     }
 
     impl<P, M> NodeStorage<P, M> for MemoryNodeStorage<P, M>
     where
-        P: Clone + Serialize + for<'de> Deserialize<'de>,
-        M: Clone + Serialize + for<'de> Deserialize<'de>,
+        P: Clone + Serialize + for<'de> Deserialize<'de> + Send + Sync,
+        M: Clone + Serialize + for<'de> Deserialize<'de> + Send + Sync,
     {
         fn get(&self, content_id: &Cid) -> GraphResult<Option<Node<P, M>>> {
-            Ok(self.nodes.borrow().get(content_id).cloned())
+            Ok(self.nodes.lock().unwrap().get(content_id).cloned())
         }
 
         fn put(&self, node: &Node<P, M>) -> GraphResult<()> {
@@ -154,13 +153,13 @@ mod tests {
         }
 
         fn delete(&self, content_id: &Cid) -> GraphResult<()> {
-            self.nodes.borrow_mut().remove(content_id);
+            self.nodes.lock().unwrap().remove(content_id);
             Ok(())
         }
 
         fn get_node_map(&self) -> GraphResult<HashMap<Cid, Vec<Cid>>> {
             let mut map = HashMap::new();
-            for (cid, node) in self.nodes.borrow().iter() {
+            for (cid, node) in self.nodes.lock().unwrap().iter() {
                 map.insert(*cid, node.parents().to_vec());
             }
             Ok(map)

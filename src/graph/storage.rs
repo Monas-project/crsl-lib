@@ -2,12 +2,12 @@ use crate::dasl::node::Node;
 use crate::graph::error::{GraphError, Result};
 use cid::Cid;
 use rusty_leveldb::{LdbIterator, Options, DB as Database};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
-pub trait NodeStorage<P, M> {
+pub trait NodeStorage<P, M>: Send + Sync {
     fn get(&self, content_id: &Cid) -> Result<Option<Node<P, M>>>;
     fn put(&self, node: &Node<P, M>) -> Result<()>;
     fn delete(&self, content_id: &Cid) -> Result<()>;
@@ -15,7 +15,7 @@ pub trait NodeStorage<P, M> {
 }
 
 pub struct LeveldbNodeStorage<P, M> {
-    db: RefCell<Database>,
+    db: Mutex<Database>,
     path: PathBuf,
     _marker: std::marker::PhantomData<(P, M)>,
 }
@@ -28,7 +28,7 @@ impl<P, M> Clone for LeveldbNodeStorage<P, M> {
         };
         let db = Database::open(&self.path, opts).expect("Failed to clone database");
         Self {
-            db: RefCell::new(db),
+            db: Mutex::new(db),
             path: self.path.clone(),
             _marker: std::marker::PhantomData,
         }
@@ -43,7 +43,7 @@ impl<P, M> LeveldbNodeStorage<P, M> {
         };
         let db = Database::open(path.as_ref(), opts).unwrap();
         Self {
-            db: RefCell::new(db),
+            db: Mutex::new(db),
             path: path.as_ref().to_path_buf(),
             _marker: std::marker::PhantomData,
         }
@@ -58,12 +58,17 @@ impl<P, M> LeveldbNodeStorage<P, M> {
 
 impl<P, M> NodeStorage<P, M> for LeveldbNodeStorage<P, M>
 where
-    P: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone,
-    M: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone,
+    P: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone + Send + Sync,
+    M: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone + Send + Sync,
 {
     fn get(&self, cid: &Cid) -> Result<Option<Node<P, M>>> {
         let key = Self::make_key(cid);
-        match self.db.borrow_mut().get(&key) {
+        match self
+            .db
+            .lock()
+            .map_err(|e| GraphError::NodeOperation(format!("Lock poisoned: {}", e)))?
+            .get(&key)
+        {
             Some(raw) => {
                 let node =
                     Node::from_bytes(&raw).map_err(|e| GraphError::NodeOperation(e.to_string()))?;
@@ -82,7 +87,8 @@ where
             .map_err(|e| GraphError::NodeOperation(e.to_string()))?;
         let key = Self::make_key(&cid);
         self.db
-            .borrow_mut()
+            .lock()
+            .map_err(|e| GraphError::NodeOperation(format!("Lock poisoned: {}", e)))?
             .put(&key, &bytes)
             .map_err(GraphError::Storage)?;
         Ok(())
@@ -91,7 +97,8 @@ where
     fn delete(&self, cid: &Cid) -> Result<()> {
         let key = Self::make_key(cid);
         self.db
-            .borrow_mut()
+            .lock()
+            .map_err(|e| GraphError::NodeOperation(format!("Lock poisoned: {}", e)))?
             .delete(&key)
             .map_err(GraphError::Storage)?;
         Ok(())
@@ -99,11 +106,11 @@ where
 
     fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
         let mut node_map = HashMap::new();
-        let mut iter = self
+        let mut db = self
             .db
-            .borrow_mut()
-            .new_iter()
-            .map_err(GraphError::Storage)?;
+            .lock()
+            .map_err(|e| GraphError::NodeOperation(format!("Lock poisoned: {}", e)))?;
+        let mut iter = db.new_iter().map_err(GraphError::Storage)?;
         iter.seek_to_first();
         let mut key = Vec::new();
         let mut value = Vec::new();
