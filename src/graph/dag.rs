@@ -2,7 +2,7 @@ use crate::dasl::node::Node;
 use crate::graph::error::{GraphError, Result};
 use crate::graph::storage::NodeStorage;
 use cid::Cid;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,75 +39,42 @@ where
         }
     }
 
-    /// Add an edge to the graph
-    ///
-    /// # Arguments
-    ///
-    /// * `payload` - The payload
-    /// * `parents` - The parent content Ids
-    /// * `metadata` - The metadata
-    ///
-    /// # Returns
-    ///
-    /// * `Cid` - The content Id of the new node
-    ///
     pub fn add_node(&mut self, payload: P, parents: Vec<Cid>, metadata: M) -> Result<Cid> {
-        let timestamp = Self::current_timestamp()?;
-        let node = Node::new_genesis(payload, timestamp, metadata);
-        let new_cid = node.content_id()?;
-        if self.would_create_cycle_with(&new_cid, &parents)? {
-            return Err(GraphError::CycleDetected);
+        if parents.is_empty() {
+            let (cid, node) = self.prepare_genesis_node(payload, metadata)?;
+            return self.persist_and_cache(cid, node);
         }
 
-        self.storage.put(&node)?;
-
-        // Update cache incrementally for the new node
-        self.ensure_subgraph_cached(&parents)?;
-        for &parent in &parents {
-            self.edges_forward.entry(parent).or_default().push(new_cid);
+        let mut inferred_genesis: Option<Cid> = None;
+        for parent in &parents {
+            let node = self
+                .storage
+                .get(parent)?
+                .ok_or(GraphError::NodeNotFound(*parent))?;
+            let candidate = node.genesis.unwrap_or(*parent);
+            match inferred_genesis {
+                Some(existing) if existing != candidate => {
+                    return Err(GraphError::InvalidParent(format!(
+                        "parents belong to different genesis series ({existing:?} vs {candidate:?})"
+                    )));
+                }
+                None => inferred_genesis = Some(candidate),
+                _ => {}
+            }
         }
-        self.edges_forward.entry(new_cid).or_default();
+        let genesis = inferred_genesis.ok_or_else(|| {
+            GraphError::Internal("child node requires at least one parent".to_string())
+        })?;
 
-        Ok(new_cid)
+        let (cid, node) = self.prepare_child_node(payload, parents, genesis, metadata)?;
+        self.persist_and_cache(cid, node)
     }
 
-    /// Add a genesis node (first version of content)
-    ///
-    /// # Arguments
-    ///
-    /// * `payload` - The payload
-    /// * `metadata` - The metadata
-    ///
-    /// # Returns
-    ///
-    /// * `Cid` - The content Id of the new genesis node
-    ///
     pub fn add_genesis_node(&mut self, payload: P, metadata: M) -> Result<Cid> {
-        let timestamp = Self::current_timestamp()?;
-        let node = Node::new_genesis(payload, timestamp, metadata);
-        let cid = node.content_id()?;
-
-        self.storage.put(&node)?;
-
-        // Initialize cache entry for genesis node
-        self.edges_forward.entry(cid).or_default();
-
-        Ok(cid)
+        let (cid, node) = self.prepare_genesis_node(payload, metadata)?;
+        self.persist_and_cache(cid, node)
     }
 
-    /// Add a child node (descendant of an existing node)
-    ///
-    /// # Arguments
-    ///
-    /// * `payload` - The payload
-    /// * `parents` - The parent content Ids
-    /// * `genesis` - The genesis CID that this node belongs to
-    /// * `metadata` - The metadata
-    ///
-    /// # Returns
-    ///
-    /// * `Cid` - The content Id of the new child node
-    ///
     pub fn add_child_node(
         &mut self,
         payload: P,
@@ -115,25 +82,94 @@ where
         genesis: Cid,
         metadata: M,
     ) -> Result<Cid> {
+        let (cid, node) = self.prepare_child_node(payload, parents, genesis, metadata)?;
+        self.persist_and_cache(cid, node)
+    }
+
+    pub fn prepare_genesis_node(&mut self, payload: P, metadata: M) -> Result<(Cid, Node<P, M>)> {
+        let timestamp = Self::current_timestamp()?;
+        let node = Node::new_genesis(payload, timestamp, metadata);
+        let cid = node.content_id()?;
+        Ok((cid, node))
+    }
+
+    pub fn prepare_child_node(
+        &mut self,
+        payload: P,
+        parents: Vec<Cid>,
+        genesis: Cid,
+        metadata: M,
+    ) -> Result<(Cid, Node<P, M>)> {
         let timestamp = Self::current_timestamp()?;
         let node = Node::new_child(payload, parents.clone(), genesis, timestamp, metadata);
         let cid = node.content_id()?;
 
-        // Use optimized genesis-based cycle detection
         if self.would_create_cycle_with(&cid, &parents)? {
             return Err(GraphError::CycleDetected);
         }
 
-        self.storage.put(&node)?;
+        Ok((cid, node))
+    }
 
-        // Update cache incrementally for the new node
-        self.ensure_subgraph_cached(&parents)?;
-        for &parent in &parents {
+    /// Persists the prepared node and updates the adjacency cache.
+    fn persist_and_cache(&mut self, cid: Cid, node: Node<P, M>) -> Result<Cid> {
+        self.storage.put(&node)?;
+        self.register_prepared_node(cid, &node)?;
+        Ok(cid)
+    }
+
+    pub fn register_prepared_node(&mut self, cid: Cid, node: &Node<P, M>) -> Result<()> {
+        let parents = node.parents();
+        if parents.is_empty() {
+            self.edges_forward.entry(cid).or_default();
+            return Ok(());
+        }
+
+        self.ensure_subgraph_cached(parents)?;
+        for &parent in parents {
             self.edges_forward.entry(parent).or_default().push(cid);
         }
         self.edges_forward.entry(cid).or_default();
+        Ok(())
+    }
 
-        Ok(cid)
+    pub fn rollback_pending_node(&mut self, cid: &Cid, parents: &[Cid]) {
+        if let Some(children) = self.edges_forward.get_mut(cid) {
+            children.clear();
+        }
+        self.edges_forward.remove(cid);
+
+        for parent in parents {
+            if let Some(children) = self.edges_forward.get_mut(parent) {
+                children.retain(|child| child != cid);
+            }
+        }
+    }
+
+    pub fn remove_node(&mut self, cid: &Cid) -> Result<()> {
+        let node = self
+            .storage
+            .get(cid)?
+            .ok_or(GraphError::NodeNotFound(*cid))?;
+
+        if let Some(children) = self.edges_forward.get(cid) {
+            if !children.is_empty() {
+                return Err(GraphError::Internal(format!(
+                    "cannot remove node {cid:?} with existing children"
+                )));
+            }
+        }
+
+        for parent in node.parents() {
+            if let Some(children) = self.edges_forward.get_mut(parent) {
+                children.retain(|child| child != cid);
+            }
+        }
+
+        self.edges_forward.remove(cid);
+        self.storage.delete(cid)?;
+
+        Ok(())
     }
 
     pub fn get_node(&self, cid: &Cid) -> Result<Option<Node<P, M>>> {
@@ -181,17 +217,14 @@ where
     /// Ensure a subgraph is cached for the given parents and their ancestors
     /// This implements lazy, incremental cache building
     fn ensure_subgraph_cached(&mut self, parents: &[Cid]) -> Result<()> {
-        let mut to_process = Vec::new();
-
-        // First, check which parents need caching
-        for &parent in parents {
-            if !self.edges_forward.contains_key(&parent) {
-                to_process.push(parent);
-            }
-        }
+        let mut to_process: Vec<Cid> = parents
+            .iter()
+            .copied()
+            .filter(|parent| !self.edges_forward.contains_key(parent))
+            .collect();
 
         // Process nodes that aren't cached yet
-        let mut processed = std::collections::HashSet::new();
+        let mut processed = HashSet::new();
         while let Some(current) = to_process.pop() {
             if processed.contains(&current) || self.edges_forward.contains_key(&current) {
                 continue;
@@ -223,7 +256,7 @@ where
             return true;
         }
         let mut stack = vec![start];
-        let mut visited = std::collections::HashSet::new();
+        let mut visited = HashSet::new();
         while let Some(node) = stack.pop() {
             if node == target {
                 return true;
@@ -246,7 +279,7 @@ where
         node_map.insert(*new_cid, parents.to_vec());
 
         let mut to_process = parents.to_vec();
-        let mut processed = std::collections::HashSet::new();
+        let mut processed = HashSet::new();
 
         while let Some(current_cid) = to_process.pop() {
             if processed.contains(&current_cid) {
@@ -267,8 +300,8 @@ where
 
     pub fn detect_cycle_cid(node_map: &HashMap<Cid, Vec<Cid>>) -> Result<bool> {
         let graph = Self::build_adjacency_list(node_map);
-        let mut visited = std::collections::HashSet::new();
-        let mut rec_stack = std::collections::HashSet::new();
+        let mut visited = HashSet::new();
+        let mut rec_stack = HashSet::new();
 
         for node in graph.keys() {
             if !visited.contains(node)
@@ -302,8 +335,8 @@ where
     fn has_cycle(
         node: Cid,
         graph: &HashMap<Cid, Vec<Cid>>,
-        visited: &mut std::collections::HashSet<Cid>,
-        rec_stack: &mut std::collections::HashSet<Cid>,
+        visited: &mut HashSet<Cid>,
+        rec_stack: &mut HashSet<Cid>,
     ) -> bool {
         visited.insert(node);
         rec_stack.insert(node);
@@ -372,8 +405,8 @@ where
     }
 
     // Returns the set of nodes (CIDs) that are referenced as parents (i.e., nodes that have children) among the given versions.
-    fn collect_nodes_with_children(&self, nodes: &[Cid]) -> Result<std::collections::HashSet<Cid>> {
-        let mut has_children = std::collections::HashSet::new();
+    fn collect_nodes_with_children(&self, nodes: &[Cid]) -> Result<HashSet<Cid>> {
+        let mut has_children = HashSet::new();
         for &node_cid in nodes {
             if let Some(node) = self.storage.get(&node_cid)? {
                 for parent_cid in node.parents() {
@@ -390,7 +423,7 @@ where
     fn collect_leaf_nodes(
         &self,
         nodes: &[Cid],
-        has_children: &std::collections::HashSet<Cid>,
+        has_children: &HashSet<Cid>,
     ) -> Result<Vec<(Cid, u64)>> {
         let mut leaf_nodes = Vec::new();
         for &node_cid in nodes {
@@ -407,8 +440,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::storage::LeveldbNodeStorage;
+    use std::cell::RefCell;
     use std::collections::BTreeMap;
-    use std::sync::Mutex;
+    use tempfile::tempdir;
 
     type TestDag = DagGraph<MockStorage, String, BTreeMap<String, String>>;
 
@@ -944,5 +979,75 @@ mod tests {
         assert_eq!(result, expected);
         // unrelated_cid should not be included
         assert!(!result.contains(&unrelated_cid));
+    }
+
+    #[test]
+    fn test_remove_node_without_children() {
+        let temp_dir = tempdir().unwrap();
+        let storage = LeveldbNodeStorage::<String, BTreeMap<String, String>>::open(temp_dir.path());
+        let mut dag = DagGraph::new(storage);
+
+        let genesis = dag
+            .add_genesis_node("payload".to_string(), BTreeMap::new())
+            .unwrap();
+
+        dag.remove_node(&genesis).unwrap();
+        assert!(dag.get_node(&genesis).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_remove_node_with_children_fails() {
+        let temp_dir = tempdir().unwrap();
+        let storage = LeveldbNodeStorage::<String, BTreeMap<String, String>>::open(temp_dir.path());
+        let mut dag = DagGraph::new(storage);
+
+        let genesis = dag
+            .add_genesis_node("payload".to_string(), BTreeMap::new())
+            .unwrap();
+        dag.add_child_node("child".to_string(), vec![genesis], genesis, BTreeMap::new())
+            .unwrap();
+
+        let err = dag.remove_node(&genesis);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_prepare_register_and_rollback_node() {
+        let temp_dir = tempdir().unwrap();
+        let storage = LeveldbNodeStorage::<String, BTreeMap<String, String>>::open(temp_dir.path());
+        let mut dag = DagGraph::new(storage);
+
+        let (genesis_cid, genesis_node) = dag
+            .prepare_genesis_node("payload".to_string(), BTreeMap::new())
+            .unwrap();
+        dag.storage.put(&genesis_node).unwrap();
+        dag.register_prepared_node(genesis_cid, &genesis_node)
+            .unwrap();
+        assert!(dag.edges_forward.contains_key(&genesis_cid));
+
+        let (child_cid, child_node) = dag
+            .prepare_child_node(
+                "child".to_string(),
+                vec![genesis_cid],
+                genesis_cid,
+                BTreeMap::new(),
+            )
+            .unwrap();
+
+        dag.register_prepared_node(child_cid, &child_node).unwrap();
+        assert!(dag.edges_forward.contains_key(&child_cid));
+
+        dag.rollback_pending_node(&child_cid, child_node.parents());
+
+        assert!(
+            !dag.edges_forward.contains_key(&child_cid),
+            "rollback should remove pending child"
+        );
+        if let Some(children) = dag.edges_forward.get(&genesis_cid) {
+            assert!(
+                !children.contains(&child_cid),
+                "rollback should detach child from parent adjacency"
+            );
+        }
     }
 }
