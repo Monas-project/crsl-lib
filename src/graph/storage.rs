@@ -75,10 +75,7 @@ impl<P, M> LeveldbNodeStorage<P, M> {
             .with_active_batch(|batch| batch.delete(key))
             .is_none()
         {
-            self.shared
-                .db()
-                .delete(key)
-                .map_err(GraphError::Storage)?;
+            self.shared.db().delete(key).map_err(GraphError::Storage)?;
         }
         Ok(())
     }
@@ -126,11 +123,7 @@ where
     /// Walks all nodes and constructs an adjacency map (parent → children).
     fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
         let mut node_map = HashMap::new();
-        let mut iter = self
-            .shared
-            .db()
-            .new_iter()
-            .map_err(GraphError::Storage)?;
+        let mut iter = self.shared.db().new_iter().map_err(GraphError::Storage)?;
         iter.seek_to_first();
         let mut key = Vec::new();
         let mut value = Vec::new();

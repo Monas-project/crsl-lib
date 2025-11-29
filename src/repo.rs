@@ -221,9 +221,9 @@ where
                 "a transaction is already active on the shared LevelDB".to_string(),
             ),
             BatchError::Commit(status) => CrdtError::Storage(status),
-            BatchError::LockPoisoned => CrdtError::Internal(
-                "shared LevelDB lock was poisoned".to_string(),
-            ),
+            BatchError::LockPoisoned => {
+                CrdtError::Internal("shared LevelDB lock was poisoned".to_string())
+            }
         })
     }
 

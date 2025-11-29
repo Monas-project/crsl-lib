@@ -491,7 +491,12 @@ mod tests {
                 None => return Ok(None),
             };
 
-            let ts = *self.timestamps.lock().unwrap().get(content_id).unwrap_or(&0);
+            let ts = *self
+                .timestamps
+                .lock()
+                .unwrap()
+                .get(content_id)
+                .unwrap_or(&0);
 
             fn find_genesis(edges: &HashMap<Cid, Vec<Cid>>, cid: &Cid) -> Cid {
                 let mut current = *cid;
@@ -862,7 +867,12 @@ mod tests {
     fn test_get_genesis_from_genesis_node() {
         let storage = MockStorage::new();
         let genesis_cid = create_test_content_id(b"genesis");
-        storage.edges.lock().unwrap().entry(genesis_cid).or_default();
+        storage
+            .edges
+            .lock()
+            .unwrap()
+            .entry(genesis_cid)
+            .or_default();
         let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
 
         let result = dag.get_genesis(&genesis_cid);
@@ -897,7 +907,12 @@ mod tests {
     fn test_calculate_latest_genesis_only() {
         let storage = MockStorage::new();
         let genesis_cid = create_test_content_id(b"genesis");
-        storage.edges.lock().unwrap().entry(genesis_cid).or_default();
+        storage
+            .edges
+            .lock()
+            .unwrap()
+            .entry(genesis_cid)
+            .or_default();
         let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
         let result = dag.calculate_latest(&genesis_cid).unwrap();
         assert_eq!(result, Some(genesis_cid));
@@ -942,7 +957,12 @@ mod tests {
     fn test_get_nodes_by_genesis_genesis_only() {
         let storage = MockStorage::new();
         let genesis_cid = create_test_content_id(b"genesis");
-        storage.edges.lock().unwrap().entry(genesis_cid).or_default();
+        storage
+            .edges
+            .lock()
+            .unwrap()
+            .entry(genesis_cid)
+            .or_default();
         let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
         let result = dag.get_nodes_by_genesis(&genesis_cid).unwrap();
         assert_eq!(result, vec![genesis_cid]);
@@ -970,7 +990,12 @@ mod tests {
         let v1_cid = create_test_content_id(b"v1");
         let unrelated_cid = create_test_content_id(b"unrelated");
         storage.setup_graph(&[(genesis1_cid, v1_cid)]);
-        storage.edges.lock().unwrap().entry(unrelated_cid).or_default();
+        storage
+            .edges
+            .lock()
+            .unwrap()
+            .entry(unrelated_cid)
+            .or_default();
         let dag = DagGraph::<MockStorage, String, BTreeMap<String, String>>::new(storage);
         let mut result = dag.get_nodes_by_genesis(&genesis1_cid).unwrap();
         result.sort();

@@ -90,8 +90,12 @@ impl<ContentId, T> SharedLeveldbAccess for LeveldbStorage<ContentId, T> {
 
 impl<ContentId, T> OperationStorage<ContentId, T> for LeveldbStorage<ContentId, T>
 where
-    ContentId:
-        serde::Serialize + for<'de> serde::Deserialize<'de> + PartialEq + std::fmt::Debug + Send + Sync,
+    ContentId: serde::Serialize
+        + for<'de> serde::Deserialize<'de>
+        + PartialEq
+        + std::fmt::Debug
+        + Send
+        + Sync,
     T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug + Send + Sync,
 {
     fn begin_batch(&self) -> std::result::Result<LeveldbBatchGuard<'_>, BatchError> {
@@ -106,11 +110,7 @@ where
 
     fn load_operations(&self, genesis: &ContentId) -> Result<Vec<Operation<ContentId, T>>> {
         let mut result = Vec::new();
-        let mut iter = self
-            .shared
-            .db()
-            .new_iter()
-            .map_err(CrdtError::Storage)?;
+        let mut iter = self.shared.db().new_iter().map_err(CrdtError::Storage)?;
         iter.seek_to_first();
 
         let mut key = Vec::new();

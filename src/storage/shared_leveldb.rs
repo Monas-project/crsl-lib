@@ -48,9 +48,10 @@ impl SharedLeveldb {
     }
 
     fn commit_batch(&self) -> Result<(), Status> {
-        let mut slot = self.active_batch.lock().map_err(|_| {
-            Status::new(rusty_leveldb::StatusCode::LockError, "Lock poisoned")
-        })?;
+        let mut slot = self
+            .active_batch
+            .lock()
+            .map_err(|_| Status::new(rusty_leveldb::StatusCode::LockError, "Lock poisoned"))?;
         let Some(batch) = slot.take() else {
             return Ok(());
         };
