@@ -441,8 +441,8 @@ where
 mod tests {
     use super::*;
     use crate::graph::storage::LeveldbNodeStorage;
-    use std::cell::RefCell;
     use std::collections::BTreeMap;
+    use std::sync::Mutex;
     use tempfile::tempdir;
 
     type TestDag = DagGraph<MockStorage, String, BTreeMap<String, String>>;
