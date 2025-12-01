@@ -101,7 +101,7 @@ where
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| CrdtError::Internal(format!("timestamp error: {e}")))
-            .map(|duration| duration.as_secs())
+            .map(|duration| duration.as_nanos() as u64)
     }
 }
 
