@@ -189,6 +189,7 @@ where
         Ok(result)
     }
 
+    /// Returns the current time in nanoseconds since the Unix epoch.
     fn current_timestamp() -> Result<u64> {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
