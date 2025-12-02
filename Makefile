@@ -1,4 +1,4 @@
-.PHONY: help test fmt clippy check clean cli-init cli-create cli-update cli-show cli-history cli-history-from-version cli-genesis demo dev-setup
+.PHONY: help test fmt clippy check clean clean-data cli-init cli-create cli-update cli-show cli-history demo dev-setup
 
 help:
 	@echo "CRSL Development Commands:"
@@ -14,9 +14,7 @@ help:
 	@echo "  make cli-create - Create sample content"
 	@echo "  make cli-update - Update content (requires GENESIS_ID)"
 	@echo "  make cli-show   - Show content (requires ID)"
-	@echo "  make cli-history - Show history from genesis (requires GENESIS_ID)"
-	@echo "  make cli-history-from-version - Show history from version (requires VERSION_ID)"
-	@echo "  make cli-genesis - Get genesis from version (requires VERSION_ID)"
+	@echo "  make cli-history - Show history from genesis (requires GENESIS_ID, optional MODE=linear)"
 	@echo "  make demo       - Run complete demo workflow"
 	@echo "  make dev-setup  - Setup development environment"
 
@@ -40,6 +38,9 @@ clean:
 clean-data:
 	rm -rf crsl_data/
 	rm -rf test_db/
+
+# Default history mode for CLI targets (tree | linear)
+MODE ?= tree
 
 # CLI Commands
 cli-init:
@@ -82,33 +83,12 @@ ifndef GENESIS_ID
 	@echo "Error: GENESIS_ID is required"
 	@echo "Usage: make cli-history GENESIS_ID=<genesis-id>"
 	@echo ""
+	@echo "Optional: MODE=linear"
 	@echo "Example:"
-	@echo "  make cli-history GENESIS_ID=QmExample123"
+	@echo "  make cli-history GENESIS_ID=QmExample123 MODE=linear"
 	@exit 1
 endif
-	cargo run --example cli -- history -g $(GENESIS_ID)
-
-cli-history-from-version:
-ifndef VERSION_ID
-	@echo "Error: VERSION_ID is required"
-	@echo "Usage: make cli-history-from-version VERSION_ID=<version-id>"
-	@echo ""
-	@echo "Example:"
-	@echo "  make cli-history-from-version VERSION_ID=QmExample123"
-	@exit 1
-endif
-	cargo run --example cli -- history-from-version -v $(VERSION_ID)
-
-cli-genesis:
-ifndef VERSION_ID
-	@echo "Error: VERSION_ID is required"
-	@echo "Usage: make cli-genesis VERSION_ID=<version-id>"
-	@echo ""
-	@echo "Example:"
-	@echo "  make cli-genesis VERSION_ID=QmExample123"
-	@exit 1
-endif
-	cargo run --example cli -- genesis -v $(VERSION_ID)
+	cargo run --example cli -- history -g $(GENESIS_ID) --mode $(MODE)
 
 # Development setup
 dev-setup: cli-init cli-create
@@ -123,70 +103,48 @@ dev-setup: cli-init cli-create
 
 # Demo workflow
 demo: clean-data cli-init
-	@echo ""
-	@echo "=== CRSL Version History Demo ==="
-	@echo "This demo will create one content, update it multiple times, and show all versions with latest verification."
-	@echo ""
-	@echo "📝 Step 1: Creating initial content..."
-	@CONTENT_GENESIS=$$(cargo run --example cli -- create -c "Initial Document v1.0" -a "alice" 2>/dev/null | grep "Content ID:" | awk '{print $$3}'); \
-	echo "Created content with Genesis ID: $$CONTENT_GENESIS"; \
+	@set -e; \
 	echo ""; \
-	echo "🔄 Step 2: Updating content multiple times..."; \
-	echo "  Updating to v1.1..."; \
-	VERSION_1=$$(cargo run --example cli -- update -g $$CONTENT_GENESIS -c "Updated Document v1.1 - Added introduction" -a "alice" 2>/dev/null | grep "New Version:" | awk '{print $$3}'); \
-	echo "  Updating to v1.2..."; \
-	VERSION_2=$$(cargo run --example cli -- update -g $$CONTENT_GENESIS -c "Updated Document v1.2 - Added API documentation" -a "alice" 2>/dev/null | grep "New Version:" | awk '{print $$3}'); \
-	echo "  Updating to v1.3..."; \
-	VERSION_3=$$(cargo run --example cli -- update -g $$CONTENT_GENESIS -c "Updated Document v1.3 - Added deployment guide" -a "alice" 2>/dev/null | grep "New Version:" | awk '{print $$3}'); \
-	echo "  Updating to v1.4..."; \
-	VERSION_4=$$(cargo run --example cli -- update -g $$CONTENT_GENESIS -c "Updated Document v1.4 - Added troubleshooting section" -a "alice" 2>/dev/null | grep "New Version:" | awk '{print $$3}'); \
-	echo "  Updating to v1.5..."; \
-	VERSION_5=$$(cargo run --example cli -- update -g $$CONTENT_GENESIS -c "Updated Document v1.5 - Final version with complete documentation" -a "alice" 2>/dev/null | grep "New Version:" | awk '{print $$3}'); \
-	echo "  Content now has 6 versions (including genesis)"; \
+	echo "=== CRSL Version History Demo ==="; \
+	echo "This demo seeds a branching storyline and inspects it from two perspectives."; \
 	echo ""; \
-	echo "📊 Step 3: Displaying complete version history..."; \
+	echo "📝 Step 1: Preparing sample history..."; \
+	CONTENT_GENESIS=$$(cargo run --example cli -- create -c "Initial draft by Alice" -a "alice" 2>/dev/null | grep "Genesis:" | awk '{print $$2}'); \
+	if [ -z "$$CONTENT_GENESIS" ]; then \
+		echo "  ! Failed to create sample content"; \
+		exit 1; \
+	fi; \
+	echo "  > Genesis CID: $$CONTENT_GENESIS"; \
+	A1=$$(cargo run --example cli -- update -g $$CONTENT_GENESIS -c "Chapter A" -a "alice" 2>/dev/null | grep "Version" | awk '{print $$3}'); \
+	echo "  > Alice adds Chapter A: $$A1"; \
+	B1=$$(cargo run --example cli -- update -g $$CONTENT_GENESIS -c "Chapter B" -a "bob" 2>/dev/null | grep "Version" | awk '{print $$3}'); \
+	echo "  > Bob adds Chapter B (linear): $$B1"; \
+	B_BRANCH=$$(cargo run --example cli -- update -g $$CONTENT_GENESIS -c "Bob's branch revisited" -a "bob" --parent $$A1 2>/dev/null | grep "New Version" | awk '{print $$3}'); \
+	echo "  > Bob branches from Chapter A: $$B_BRANCH"; \
+	MERGE_TRIGGER=$$(cargo run --example cli -- update -g $$CONTENT_GENESIS -c "Merged storyline" -a "carol" 2>/dev/null | grep "Version" | awk '{print $$3}'); \
+	echo "  > Carol pushes merge-friendly update: $$MERGE_TRIGGER"; \
+	AUTO_MERGE=$$(cargo run --example cli -- history -g $$CONTENT_GENESIS --mode linear 2>/dev/null | grep "🔀" | awk '{print $$3}' | head -1); \
+	if [ -n "$$AUTO_MERGE" ]; then \
+		echo "  > 🤖 Auto-merge produced merge node: $$AUTO_MERGE"; \
+	else \
+		echo "  > ⚠️  Auto-merge node not detected"; \
+	fi; \
+	FINAL=$$(cargo run --example cli -- update -g $$CONTENT_GENESIS -c "Conclusion" -a "alice" 2>/dev/null | grep "Version" | awk '{print $$3}'); \
+	echo "  > Alice writes conclusion: $$FINAL"; \
 	echo ""; \
-	echo "=== Complete Version History ==="; \
+	echo "📊 Step 2: Inspecting history views..."; \
+	echo ""; \
+	echo "=== Branching History (node list) ==="; \
 	cargo run --example cli -- history -g $$CONTENT_GENESIS; \
 	echo ""; \
-	echo "🔍 Step 4: Verifying latest version for each version..."; \
+	echo "=== Linear Timeline (version list) ==="; \
+	cargo run --example cli -- history -g $$CONTENT_GENESIS --mode linear; \
 	echo ""; \
-	echo "=== Version Verification ==="; \
-	echo "Getting version list from history..."; \
-	VERSION_LIST=$$(cargo run --example cli -- history -g $$CONTENT_GENESIS 2>/dev/null | grep -E "🌱|📝|✨" | awk '{print $$3}'); \
-	echo "Version list: $$VERSION_LIST"; \
-	echo ""; \
-	echo "Checking Genesis (v1.0):"; \
-	cargo run --example cli -- show $$CONTENT_GENESIS; \
-	echo ""; \
-	echo "Checking Version 1 (v1.1):"; \
-	VERSION_1=$$(echo "$$VERSION_LIST" | head -1); \
-	cargo run --example cli -- show $$VERSION_1; \
-	echo ""; \
-	echo "Checking Version 2 (v1.2):"; \
-	VERSION_2=$$(echo "$$VERSION_LIST" | head -2 | tail -1); \
-	cargo run --example cli -- show $$VERSION_2; \
-	echo ""; \
-	echo "Checking Version 3 (v1.3):"; \
-	VERSION_3=$$(echo "$$VERSION_LIST" | head -3 | tail -1); \
-	cargo run --example cli -- show $$VERSION_3; \
-	echo ""; \
-	echo "Checking Version 4 (v1.4):"; \
-	VERSION_4=$$(echo "$$VERSION_LIST" | head -4 | tail -1); \
-	cargo run --example cli -- show $$VERSION_4; \
-	echo ""; \
-	echo "Checking Version 5 (v1.5):"; \
-	VERSION_5=$$(echo "$$VERSION_LIST" | head -5 | tail -1); \
-	cargo run --example cli -- show $$VERSION_5; \
-	echo ""; \
-	echo "🎯 Step 5: Latest version summary..."; \
-	echo ""; \
-	echo "Latest version: $$VERSION_5"; \
-	echo "Total versions: 6 (1 genesis + 5 updates)"; \
+	echo "=== Version CIDs ==="; \
+	VERSION_LIST=$$(cargo run --example cli -- history -g $$CONTENT_GENESIS --mode linear 2>/dev/null | grep -E "🌱|🧩|🔀|✨" | awk '{print $$3}'); \
+	echo "$$VERSION_LIST" | tr ' ' '\n'; \
 	echo ""; \
 	echo "=== Demo completed successfully! ==="; \
-	echo "✓ Created 1 content with 6 versions"; \
-	echo "✓ Applied 5 sequential updates"; \
-	echo "✓ Demonstrated latest version calculation for each version"; \
-	echo "✓ Verified that only the last version is marked as latest"; \
-	echo ""; \
+	echo "✓ Sample storyline created"; \
+	echo "✓ Branching nodes and ordered versions displayed"; \
+	echo ""

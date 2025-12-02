@@ -14,6 +14,7 @@ use crsl_lib::{
         storage::LeveldbStorage as OpStore,
     },
     graph::{dag::DagGraph, storage::LeveldbNodeStorage as NodeStorage},
+    storage::SharedLeveldb,
 };
 use tempfile::tempdir;
 
@@ -23,8 +24,9 @@ type ContentState = CrdtState<String, Content, Store, LwwReducer>;
 
 fn main() {
     let tmp = tempdir().expect("tmp dir");
-    let op_store = OpStore::open(tmp.path().join("ops")).unwrap();
-    let node_store = NodeStorage::open(tmp.path().join("nodes"));
+    let shared = SharedLeveldb::open(tmp.path().join("store")).unwrap();
+    let op_store = OpStore::new(shared.clone());
+    let node_store = NodeStorage::new(shared);
     let state = ContentState::new(op_store);
     let mut _dag = DagGraph::<_, Content, ()>::new(node_store);
 
@@ -60,8 +62,7 @@ fn main() {
     // 2. Update  (v2)    ← HEAD = v1
     // ────────────────────────────────────────────────
     // todo: find the latest root_id or maybe get root_id from latest node??
-    let op_v2 = Operation::new_with_genesis(
-        cid.clone(),
+    let op_v2 = Operation::new(
         cid.clone(),
         OperationType::Update("Updated content".into()),
         "user1".into(),
@@ -78,8 +79,7 @@ fn main() {
     // ────────────────────────────────────────────────
     // 3. Update  (v3a)  ← branch A
     // ────────────────────────────────────────────────
-    let op_v3a = Operation::new_with_genesis(
-        cid.clone(),
+    let op_v3a = Operation::new(
         content_id.clone(),
         OperationType::Update("Updated content 2".to_string()),
         "user2".to_string(),
@@ -96,8 +96,7 @@ fn main() {
     // ────────────────────────────────────────────────
     // 4. Update  (v3b)   ← branch B (parent = v2)
     // ────────────────────────────────────────────────
-    let op_v3b = Operation::new_with_genesis(
-        cid.clone(),
+    let op_v3b = Operation::new(
         content_id.clone(),
         OperationType::Update("Updated content B".into()),
         "userB".into(),
