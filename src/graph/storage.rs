@@ -5,10 +5,10 @@ use cid::Cid;
 use rusty_leveldb::LdbIterator;
 use std::collections::HashMap;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Minimal interface required for persisting DAG nodes.
-pub trait NodeStorage<P, M> {
+pub trait NodeStorage<P, M>: Send + Sync {
     fn get(&self, content_id: &Cid) -> Result<Option<Node<P, M>>>;
     fn put(&self, node: &Node<P, M>) -> Result<()>;
     fn delete(&self, content_id: &Cid) -> Result<()>;
@@ -17,7 +17,7 @@ pub trait NodeStorage<P, M> {
 
 /// [`NodeStorage`] implementation backed by a shared LevelDB instance.
 pub struct LeveldbNodeStorage<P, M> {
-    shared: Rc<SharedLeveldb>,
+    shared: Arc<SharedLeveldb>,
     _marker: std::marker::PhantomData<(P, M)>,
 }
 
@@ -38,7 +38,7 @@ impl<P, M> LeveldbNodeStorage<P, M> {
     }
 
     /// Creates the storage from an existing [`SharedLeveldb`] handle.
-    pub fn new(shared: Rc<SharedLeveldb>) -> Self {
+    pub fn new(shared: Arc<SharedLeveldb>) -> Self {
         Self {
             shared,
             _marker: std::marker::PhantomData,
@@ -62,7 +62,6 @@ impl<P, M> LeveldbNodeStorage<P, M> {
         {
             self.shared
                 .db()
-                .borrow_mut()
                 .put(key, value)
                 .map_err(GraphError::Storage)?;
         }
@@ -76,30 +75,26 @@ impl<P, M> LeveldbNodeStorage<P, M> {
             .with_active_batch(|batch| batch.delete(key))
             .is_none()
         {
-            self.shared
-                .db()
-                .borrow_mut()
-                .delete(key)
-                .map_err(GraphError::Storage)?;
+            self.shared.db().delete(key).map_err(GraphError::Storage)?;
         }
         Ok(())
     }
 }
 
 impl<P, M> SharedLeveldbAccess for LeveldbNodeStorage<P, M> {
-    fn shared_leveldb(&self) -> Option<Rc<SharedLeveldb>> {
+    fn shared_leveldb(&self) -> Option<Arc<SharedLeveldb>> {
         Some(self.shared.clone())
     }
 }
 
 impl<P, M> NodeStorage<P, M> for LeveldbNodeStorage<P, M>
 where
-    P: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone,
-    M: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone,
+    P: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone + Send + Sync,
+    M: serde::Serialize + for<'de> serde::Deserialize<'de> + Clone + Send + Sync,
 {
     fn get(&self, cid: &Cid) -> Result<Option<Node<P, M>>> {
         let key = Self::make_key(cid);
-        match self.shared.db().borrow_mut().get(&key) {
+        match self.shared.db().get(&key) {
             Some(raw) => {
                 let node =
                     Node::from_bytes(&raw).map_err(|e| GraphError::NodeOperation(e.to_string()))?;
@@ -128,12 +123,7 @@ where
     /// Walks all nodes and constructs an adjacency map (parent → children).
     fn get_node_map(&self) -> Result<HashMap<Cid, Vec<Cid>>> {
         let mut node_map = HashMap::new();
-        let mut iter = self
-            .shared
-            .db()
-            .borrow_mut()
-            .new_iter()
-            .map_err(GraphError::Storage)?;
+        let mut iter = self.shared.db().new_iter().map_err(GraphError::Storage)?;
         iter.seek_to_first();
         let mut key = Vec::new();
         let mut value = Vec::new();

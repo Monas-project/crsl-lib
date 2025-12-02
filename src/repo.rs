@@ -18,7 +18,7 @@ use cid::Cid;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
-use std::rc::Rc;
+use std::sync::Arc;
 
 struct PendingNode {
     cid: Cid,
@@ -151,7 +151,7 @@ where
         Ok(path)
     }
 
-    fn shared_leveldb(&self) -> Result<Rc<SharedLeveldb>> {
+    fn shared_leveldb(&self) -> Result<Arc<SharedLeveldb>> {
         let op_db = self.state.storage().shared_leveldb().ok_or_else(|| {
             CrdtError::Internal("operation storage does not support batching".into())
         })?;
@@ -160,7 +160,7 @@ where
                 CrdtError::Internal("node storage does not support batching".into())
             })?;
 
-        if !Rc::ptr_eq(&op_db, &node_db) {
+        if !Arc::ptr_eq(&op_db, &node_db) {
             return Err(CrdtError::Internal(
                 "operation and node storage must share the same LevelDB instance for transactions"
                     .into(),
@@ -221,6 +221,9 @@ where
                 "a transaction is already active on the shared LevelDB".to_string(),
             ),
             BatchError::Commit(status) => CrdtError::Storage(status),
+            BatchError::LockPoisoned => {
+                CrdtError::Internal("shared LevelDB lock was poisoned".to_string())
+            }
         })
     }
 
@@ -498,7 +501,7 @@ mod tests {
     use crate::graph::error::GraphError;
     use crate::graph::storage::LeveldbNodeStorage;
     use rusty_leveldb::{Status, StatusCode};
-    use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tempfile::tempdir;
     use ulid::Ulid;
 
@@ -536,35 +539,37 @@ mod tests {
 
     struct FailingOperationStorage<S> {
         inner: S,
-        fail_next: Cell<bool>,
+        fail_next: AtomicBool,
     }
 
     impl<S> FailingOperationStorage<S> {
         fn new(inner: S) -> Self {
             Self {
                 inner,
-                fail_next: Cell::new(false),
+                fail_next: AtomicBool::new(false),
             }
         }
 
         fn fail_on_first(inner: S) -> Self {
             Self {
                 inner,
-                fail_next: Cell::new(true),
+                fail_next: AtomicBool::new(true),
             }
         }
 
         fn fail_on_next(&self) {
-            self.fail_next.set(true);
+            self.fail_next.store(true, Ordering::SeqCst);
         }
     }
 
     impl<S, ContentId, T> OperationStorage<ContentId, T> for FailingOperationStorage<S>
     where
         S: OperationStorage<ContentId, T>,
+        ContentId: Send + Sync,
+        T: Send + Sync,
     {
         fn save_operation(&self, op: &Operation<ContentId, T>) -> crate::crdt::error::Result<()> {
-            if self.fail_next.replace(false) {
+            if self.fail_next.swap(false, Ordering::SeqCst) {
                 Err(CrdtError::Internal(
                     "forced failure for testing".to_string(),
                 ))
@@ -596,21 +601,21 @@ mod tests {
     where
         S: SharedLeveldbAccess,
     {
-        fn shared_leveldb(&self) -> Option<Rc<SharedLeveldb>> {
+        fn shared_leveldb(&self) -> Option<Arc<SharedLeveldb>> {
             self.inner.shared_leveldb()
         }
     }
 
     struct FailingNodeStorage<S> {
         inner: S,
-        fail_next_put: Cell<bool>,
+        fail_next_put: AtomicBool,
     }
 
     impl<S> FailingNodeStorage<S> {
         fn fail_on_first_put(inner: S) -> Self {
             Self {
                 inner,
-                fail_next_put: Cell::new(true),
+                fail_next_put: AtomicBool::new(true),
             }
         }
     }
@@ -618,13 +623,15 @@ mod tests {
     impl<S, P, M> NodeStorage<P, M> for FailingNodeStorage<S>
     where
         S: NodeStorage<P, M>,
+        P: Send + Sync,
+        M: Send + Sync,
     {
         fn get(&self, content_id: &Cid) -> crate::graph::error::Result<Option<Node<P, M>>> {
             self.inner.get(content_id)
         }
 
         fn put(&self, node: &Node<P, M>) -> crate::graph::error::Result<()> {
-            if self.fail_next_put.replace(false) {
+            if self.fail_next_put.swap(false, Ordering::SeqCst) {
                 Err(GraphError::Internal(
                     "injected node storage failure".to_string(),
                 ))
@@ -646,7 +653,7 @@ mod tests {
     where
         S: SharedLeveldbAccess,
     {
-        fn shared_leveldb(&self) -> Option<Rc<SharedLeveldb>> {
+        fn shared_leveldb(&self) -> Option<Arc<SharedLeveldb>> {
             self.inner.shared_leveldb()
         }
     }

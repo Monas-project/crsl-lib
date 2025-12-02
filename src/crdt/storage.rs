@@ -5,11 +5,11 @@ use bincode;
 use rusty_leveldb::LdbIterator;
 use std::marker::PhantomData;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 use ulid::Ulid;
 
 /// Abstraction over the persistent storage used by `CrdtState`.
-pub trait OperationStorage<ContentId, T> {
+pub trait OperationStorage<ContentId, T>: Send + Sync {
     fn save_operation(&self, op: &Operation<ContentId, T>) -> Result<()>;
     fn load_operations(&self, genesis: &ContentId) -> Result<Vec<Operation<ContentId, T>>>;
     fn get_operation(&self, op_id: &Ulid) -> Result<Option<Operation<ContentId, T>>>;
@@ -22,7 +22,7 @@ pub trait OperationStorage<ContentId, T> {
 /// LevelDB-backed implementation of [`OperationStorage`].
 #[derive(Clone)]
 pub struct LeveldbStorage<ContentId, T> {
-    shared: Rc<SharedLeveldb>,
+    shared: Arc<SharedLeveldb>,
     _marker: PhantomData<(ContentId, T)>,
 }
 
@@ -32,7 +32,7 @@ impl<ContentId, T> LeveldbStorage<ContentId, T> {
         Ok(Self::new(shared))
     }
 
-    pub fn new(shared: Rc<SharedLeveldb>) -> Self {
+    pub fn new(shared: Arc<SharedLeveldb>) -> Self {
         Self {
             shared,
             _marker: PhantomData,
@@ -64,7 +64,7 @@ impl<ContentId, T> LeveldbStorage<ContentId, T> {
             .with_active_batch(|batch| batch.put(key, value))
             .is_none()
         {
-            self.shared.db().borrow_mut().put(key, value)?;
+            self.shared.db().put(key, value)?;
         }
         Ok(())
     }
@@ -76,22 +76,27 @@ impl<ContentId, T> LeveldbStorage<ContentId, T> {
             .with_active_batch(|batch| batch.delete(key))
             .is_none()
         {
-            self.shared.db().borrow_mut().delete(key)?;
+            self.shared.db().delete(key)?;
         }
         Ok(())
     }
 }
 
 impl<ContentId, T> SharedLeveldbAccess for LeveldbStorage<ContentId, T> {
-    fn shared_leveldb(&self) -> Option<Rc<SharedLeveldb>> {
+    fn shared_leveldb(&self) -> Option<Arc<SharedLeveldb>> {
         Some(self.shared.clone())
     }
 }
 
 impl<ContentId, T> OperationStorage<ContentId, T> for LeveldbStorage<ContentId, T>
 where
-    ContentId: serde::Serialize + for<'de> serde::Deserialize<'de> + PartialEq + std::fmt::Debug,
-    T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug,
+    ContentId: serde::Serialize
+        + for<'de> serde::Deserialize<'de>
+        + PartialEq
+        + std::fmt::Debug
+        + Send
+        + Sync,
+    T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug + Send + Sync,
 {
     fn begin_batch(&self) -> std::result::Result<LeveldbBatchGuard<'_>, BatchError> {
         self.shared.begin_batch()
@@ -105,12 +110,7 @@ where
 
     fn load_operations(&self, genesis: &ContentId) -> Result<Vec<Operation<ContentId, T>>> {
         let mut result = Vec::new();
-        let mut iter = self
-            .shared
-            .db()
-            .borrow_mut()
-            .new_iter()
-            .map_err(CrdtError::Storage)?;
+        let mut iter = self.shared.db().new_iter().map_err(CrdtError::Storage)?;
         iter.seek_to_first();
 
         let mut key = Vec::new();
@@ -133,7 +133,7 @@ where
 
     fn get_operation(&self, op_id: &Ulid) -> Result<Option<Operation<ContentId, T>>> {
         let key = Self::make_key(op_id);
-        match self.shared.db().borrow_mut().get(&key) {
+        match self.shared.db().get(&key) {
             Some(raw) => {
                 let (op, _) = bincode::serde::decode_from_slice::<Operation<ContentId, T>, _>(
                     &raw,

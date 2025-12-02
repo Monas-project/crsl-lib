@@ -1,39 +1,42 @@
 use rusty_leveldb::{Options, Status, WriteBatch, DB as Database};
-use std::cell::RefCell;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Debug)]
 pub enum BatchError {
     Unsupported,
     AlreadyActive,
     Commit(Status),
+    LockPoisoned,
 }
 
 pub struct SharedLeveldb {
-    db: RefCell<Database>,
-    active_batch: RefCell<Option<WriteBatch>>,
+    db: Mutex<Database>,
+    active_batch: Mutex<Option<WriteBatch>>,
     #[cfg(test)]
-    commit_fail_status: RefCell<Option<Status>>,
+    commit_fail_status: Mutex<Option<Status>>,
 }
 
 impl SharedLeveldb {
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Rc<Self>, Status> {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Arc<Self>, Status> {
         let opts = Options {
             create_if_missing: true,
             ..Default::default()
         };
         let db = Database::open(path, opts)?;
-        Ok(Rc::new(Self {
-            db: RefCell::new(db),
-            active_batch: RefCell::new(None),
+        Ok(Arc::new(Self {
+            db: Mutex::new(db),
+            active_batch: Mutex::new(None),
             #[cfg(test)]
-            commit_fail_status: RefCell::new(None),
+            commit_fail_status: Mutex::new(None),
         }))
     }
 
     pub fn begin_batch(&self) -> Result<LeveldbBatchGuard<'_>, BatchError> {
-        let mut slot = self.active_batch.borrow_mut();
+        let mut slot = self
+            .active_batch
+            .lock()
+            .map_err(|_| BatchError::LockPoisoned)?;
         if slot.is_some() {
             return Err(BatchError::AlreadyActive);
         }
@@ -45,31 +48,48 @@ impl SharedLeveldb {
     }
 
     fn commit_batch(&self) -> Result<(), Status> {
-        let mut slot = self.active_batch.borrow_mut();
+        let mut slot = self
+            .active_batch
+            .lock()
+            .map_err(|_| Status::new(rusty_leveldb::StatusCode::LockError, "Lock poisoned"))?;
         let Some(batch) = slot.take() else {
             return Ok(());
         };
         #[cfg(test)]
-        if let Some(status) = self.commit_fail_status.borrow_mut().take() {
+        if let Some(status) = self
+            .commit_fail_status
+            .lock()
+            .ok()
+            .and_then(|mut s| s.take())
+        {
             return Err(status);
         }
-        self.db.borrow_mut().write(batch, true)
+        self.db
+            .lock()
+            .map_err(|_| Status::new(rusty_leveldb::StatusCode::LockError, "Lock poisoned"))?
+            .write(batch, true)
     }
 
     fn abort_batch(&self) {
-        self.active_batch.borrow_mut().take();
+        if let Ok(mut slot) = self.active_batch.lock() {
+            slot.take();
+        }
     }
 
     pub fn with_active_batch<F, R>(&self, f: F) -> Option<R>
     where
         F: FnOnce(&mut WriteBatch) -> R,
     {
-        let mut slot = self.active_batch.borrow_mut();
+        let mut slot = self.active_batch.lock().ok()?;
         slot.as_mut().map(f)
     }
 
-    pub fn db(&self) -> &RefCell<Database> {
-        &self.db
+    pub fn db(&self) -> MutexGuard<'_, Database> {
+        self.db.lock().expect("Database lock poisoned")
+    }
+
+    pub fn try_db(&self) -> Result<MutexGuard<'_, Database>, BatchError> {
+        self.db.lock().map_err(|_| BatchError::LockPoisoned)
     }
 }
 
@@ -95,13 +115,15 @@ impl Drop for LeveldbBatchGuard<'_> {
 }
 
 pub trait SharedLeveldbAccess {
-    fn shared_leveldb(&self) -> Option<Rc<SharedLeveldb>>;
+    fn shared_leveldb(&self) -> Option<Arc<SharedLeveldb>>;
 }
 
 #[cfg(test)]
 impl SharedLeveldb {
     pub fn inject_commit_failure(&self, status: Status) {
-        self.commit_fail_status.borrow_mut().replace(status);
+        if let Ok(mut slot) = self.commit_fail_status.lock() {
+            slot.replace(status);
+        }
     }
 }
 
@@ -146,7 +168,6 @@ mod tests {
 
         let stored = shared
             .db()
-            .borrow_mut()
             .get(key)
             .expect("value should exist after commit");
         assert_eq!(stored.as_slice(), value);
@@ -166,7 +187,7 @@ mod tests {
             // guard dropped here without commit
         }
 
-        let result = shared.db().borrow_mut().get(key);
+        let result = shared.db().get(key);
         assert!(
             result.is_none(),
             "value should not be persisted when batch guard is dropped without commit"
