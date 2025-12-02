@@ -21,7 +21,7 @@ const RAW_CODE: u64 = 0x55;
 /// * `payload` - The main content/data of the entry.
 /// * `parents` - A vector of content ids (Content Identifiers) pointing to parent entries.
 /// * `genesis` - The genesis CID that this node belongs to (None for genesis nodes, Some(genesis_cid) for child nodes).
-/// * `timestamp` - Unix timestamp representing when the entry was created.
+/// * `timestamp` - Unix timestamp in nanoseconds representing when the entry was created.
 /// * `metadata` - Additional information about the entry (e.g., author, tags, or other attributes).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(bound = "P: Serialize + for<'a> Deserialize<'a>, M: Serialize + for<'a> Deserialize<'a>")]
