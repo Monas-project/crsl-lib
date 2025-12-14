@@ -216,9 +216,7 @@ where
             OperationType::Update(payload) => {
                 self.stage_update(payload, &op, timestamp, &mut pending_nodes)?
             }
-            OperationType::Delete => {
-                self.stage_delete(&op, timestamp, &mut pending_nodes)?
-            }
+            OperationType::Delete => self.stage_delete(&op, timestamp, &mut pending_nodes)?,
             OperationType::Merge(payload) => {
                 if op.node_timestamp.is_none() {
                     return Err(CrdtError::Internal(
@@ -308,9 +306,9 @@ where
         timestamp: u64,
         pending_nodes: &mut Vec<PendingNode>,
     ) -> Result<Cid> {
-        let (genesis_cid, node) = self
-            .dag
-            .prepare_genesis_node(payload, timestamp, ContentMetadata::default())?;
+        let (genesis_cid, node) =
+            self.dag
+                .prepare_genesis_node(payload, timestamp, ContentMetadata::default())?;
 
         if op.node_timestamp.is_some() {
             // Import: verify that the computed CID matches the expected genesis
@@ -1671,8 +1669,10 @@ mod tests {
             multihash::Multihash::<64>::wrap(0x12, b"import-update-test").unwrap(),
         );
         let create_payload = TestPayload("initial".to_string());
-        let create_op =
-            make_test_operation(initial_genesis, OperationType::Create(create_payload.clone()));
+        let create_op = make_test_operation(
+            initial_genesis,
+            OperationType::Create(create_payload.clone()),
+        );
         let genesis_cid = repo1.commit_operation(create_op.clone()).unwrap();
 
         // Get genesis node timestamp

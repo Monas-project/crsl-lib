@@ -81,7 +81,8 @@ where
             GraphError::Internal("child node requires at least one parent".to_string())
         })?;
 
-        let (cid, node) = self.prepare_child_node(payload, parents, genesis, timestamp, metadata)?;
+        let (cid, node) =
+            self.prepare_child_node(payload, parents, genesis, timestamp, metadata)?;
         self.persist_and_cache(cid, node)
     }
 
@@ -114,7 +115,8 @@ where
         timestamp: u64,
         metadata: M,
     ) -> Result<Cid> {
-        let (cid, node) = self.prepare_child_node(payload, parents, genesis, timestamp, metadata)?;
+        let (cid, node) =
+            self.prepare_child_node(payload, parents, genesis, timestamp, metadata)?;
         self.persist_and_cache(cid, node)
     }
 
@@ -248,7 +250,6 @@ where
         }
         Ok(result)
     }
-
 
     /// Check if adding an edge (new node with parents) would create a cycle
     fn would_create_cycle_with(&mut self, new_cid: &Cid, parents: &[Cid]) -> Result<bool> {
@@ -828,7 +829,13 @@ mod tests {
             .add_genesis_node("genesis".to_string(), 1000, ())
             .unwrap();
         let child_cid = dag
-            .add_child_node("child".to_string(), vec![genesis_cid], genesis_cid, 2000, ())
+            .add_child_node(
+                "child".to_string(),
+                vec![genesis_cid],
+                genesis_cid,
+                2000,
+                (),
+            )
             .unwrap();
 
         let latest = dag.calculate_latest(&genesis_cid).unwrap();
@@ -1085,8 +1092,14 @@ mod tests {
         let genesis = dag
             .add_genesis_node("payload".to_string(), 1000, BTreeMap::new())
             .unwrap();
-        dag.add_child_node("child".to_string(), vec![genesis], genesis, 2000, BTreeMap::new())
-            .unwrap();
+        dag.add_child_node(
+            "child".to_string(),
+            vec![genesis],
+            genesis,
+            2000,
+            BTreeMap::new(),
+        )
+        .unwrap();
 
         let err = dag.remove_node(&genesis);
         assert!(err.is_err());
