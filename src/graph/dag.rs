@@ -88,6 +88,29 @@ where
 
     pub fn prepare_genesis_node(&mut self, payload: P, metadata: M) -> Result<(Cid, Node<P, M>)> {
         let timestamp = Self::current_timestamp()?;
+        self.prepare_genesis_node_with_timestamp(payload, timestamp, metadata)
+    }
+
+    /// Creates a genesis node with a specified timestamp (for replication).
+    ///
+    /// This method is used when importing operations from other replicas,
+    /// where the original timestamp must be preserved to maintain CID consistency.
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The payload data for the node
+    /// * `timestamp` - The timestamp to use (from the original node)
+    /// * `metadata` - The metadata for the node
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (CID, Node) for the created genesis node
+    pub fn prepare_genesis_node_with_timestamp(
+        &mut self,
+        payload: P,
+        timestamp: u64,
+        metadata: M,
+    ) -> Result<(Cid, Node<P, M>)> {
         let node = Node::new_genesis(payload, timestamp, metadata);
         let cid = node.content_id()?;
         Ok((cid, node))
@@ -101,6 +124,33 @@ where
         metadata: M,
     ) -> Result<(Cid, Node<P, M>)> {
         let timestamp = Self::current_timestamp()?;
+        self.prepare_child_node_with_timestamp(payload, parents, genesis, timestamp, metadata)
+    }
+
+    /// Creates a child node with a specified timestamp (for replication).
+    ///
+    /// This method is used when importing operations from other replicas,
+    /// where the original timestamp must be preserved to maintain CID consistency.
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The payload data for the node
+    /// * `parents` - The parent CIDs for this node
+    /// * `genesis` - The genesis CID this node belongs to
+    /// * `timestamp` - The timestamp to use (from the original node)
+    /// * `metadata` - The metadata for the node
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (CID, Node) for the created child node
+    pub fn prepare_child_node_with_timestamp(
+        &mut self,
+        payload: P,
+        parents: Vec<Cid>,
+        genesis: Cid,
+        timestamp: u64,
+        metadata: M,
+    ) -> Result<(Cid, Node<P, M>)> {
         let node = Node::new_child(payload, parents.clone(), genesis, timestamp, metadata);
         let cid = node.content_id()?;
 
