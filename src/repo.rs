@@ -201,9 +201,8 @@ where
         let batch_guard = Self::begin_shared_batch(&shared)?;
         let mut pending_nodes: Vec<PendingNode> = Vec::new();
 
-        // If node_timestamp is set, this is an import operation - skip auto-merge
-        let is_import = op.node_timestamp.is_some();
-        if !skip_auto_merge && !is_import {
+        // If node_timestamp is not set, run auto-merge logic
+        if !skip_auto_merge && op.node_timestamp.is_none() {
             self.ensure_parent_context(&mut op, &mut pending_nodes)?;
         }
 
@@ -212,16 +211,16 @@ where
 
         let cid = match op.kind.clone() {
             OperationType::Create(payload) => {
-                self.stage_create(payload, &mut op, timestamp, is_import, &mut pending_nodes)?
+                self.stage_create(payload, &mut op, timestamp, &mut pending_nodes)?
             }
             OperationType::Update(payload) => {
-                self.stage_update(payload, &op, timestamp, is_import, &mut pending_nodes)?
+                self.stage_update(payload, &op, timestamp, &mut pending_nodes)?
             }
             OperationType::Delete => {
-                self.stage_delete(&op, timestamp, is_import, &mut pending_nodes)?
+                self.stage_delete(&op, timestamp, &mut pending_nodes)?
             }
             OperationType::Merge(payload) => {
-                if !is_import {
+                if op.node_timestamp.is_none() {
                     return Err(CrdtError::Internal(
                         "Merge operations must be committed via auto-merge".to_string(),
                     ));
@@ -300,26 +299,21 @@ where
 
     /// Stages a Create operation.
     ///
-    /// # Arguments
-    /// * `payload` - The payload for the new content
-    /// * `op` - The operation (genesis will be set if not importing)
-    /// * `timestamp` - The timestamp to use for CID generation
-    /// * `is_import` - If true, verifies CID matches op.genesis; if false, sets op.genesis
-    /// * `pending_nodes` - Accumulator for pending nodes
+    /// If `op.node_timestamp` is set (import), verifies CID matches op.genesis.
+    /// Otherwise, sets op.genesis to the computed CID.
     fn stage_create(
         &mut self,
         payload: Payload,
         op: &mut Operation<Cid, Payload>,
         timestamp: u64,
-        is_import: bool,
         pending_nodes: &mut Vec<PendingNode>,
     ) -> Result<Cid> {
         let (genesis_cid, node) = self
             .dag
             .prepare_genesis_node(payload, timestamp, ContentMetadata::default())?;
 
-        if is_import {
-            // Verify that the computed CID matches the expected genesis from the operation
+        if op.node_timestamp.is_some() {
+            // Import: verify that the computed CID matches the expected genesis
             if genesis_cid != op.genesis {
                 return Err(CrdtError::Internal(format!(
                     "CID mismatch during import: expected {}, got {}",
@@ -327,6 +321,7 @@ where
                 )));
             }
         } else {
+            // Local create: set genesis to the computed CID
             op.genesis = genesis_cid;
         }
 
@@ -339,11 +334,11 @@ where
         payload: Payload,
         op: &Operation<Cid, Payload>,
         timestamp: u64,
-        is_import: bool,
         pending_nodes: &mut Vec<PendingNode>,
     ) -> Result<Cid> {
+        let lenient = op.node_timestamp.is_some();
         let metadata =
-            self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), is_import)?;
+            self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), lenient)?;
         let (cid, node) = self.dag.prepare_child_node(
             payload,
             op.parents.clone(),
@@ -359,7 +354,6 @@ where
         &mut self,
         op: &Operation<Cid, Payload>,
         timestamp: u64,
-        is_import: bool,
         pending_nodes: &mut Vec<PendingNode>,
     ) -> Result<Cid> {
         let ops = self.state.get_operations_by_genesis(&op.genesis)?;
@@ -380,8 +374,9 @@ where
                 ))
             })?;
 
+        let lenient = op.node_timestamp.is_some();
         let metadata =
-            self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), is_import)?;
+            self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), lenient)?;
         let (cid, node) = self.dag.prepare_child_node(
             last_payload,
             op.parents.clone(),
