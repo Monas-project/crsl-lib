@@ -4,7 +4,6 @@ use crate::graph::storage::NodeStorage;
 use cid::Cid;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Directed Acyclic Graph(DAG) Structure
 ///
@@ -39,9 +38,25 @@ where
         }
     }
 
-    pub fn add_node(&mut self, payload: P, parents: Vec<Cid>, metadata: M) -> Result<Cid> {
+    /// Adds a node to the DAG with a specified timestamp.
+    ///
+    /// If parents is empty, creates a genesis node. Otherwise, creates a child node.
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The payload data for the node
+    /// * `parents` - Parent CIDs (empty for genesis nodes)
+    /// * `timestamp` - The timestamp for CID generation
+    /// * `metadata` - The metadata for the node
+    pub fn add_node(
+        &mut self,
+        payload: P,
+        parents: Vec<Cid>,
+        timestamp: u64,
+        metadata: M,
+    ) -> Result<Cid> {
         if parents.is_empty() {
-            let (cid, node) = self.prepare_genesis_node(payload, metadata)?;
+            let (cid, node) = self.prepare_genesis_node(payload, timestamp, metadata)?;
             return self.persist_and_cache(cid, node);
         }
 
@@ -66,46 +81,55 @@ where
             GraphError::Internal("child node requires at least one parent".to_string())
         })?;
 
-        let (cid, node) = self.prepare_child_node(payload, parents, genesis, metadata)?;
+        let (cid, node) = self.prepare_child_node(payload, parents, genesis, timestamp, metadata)?;
         self.persist_and_cache(cid, node)
     }
 
-    pub fn add_genesis_node(&mut self, payload: P, metadata: M) -> Result<Cid> {
-        let (cid, node) = self.prepare_genesis_node(payload, metadata)?;
+    /// Adds a genesis node to the DAG with a specified timestamp.
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The payload data for the node
+    /// * `timestamp` - The timestamp for CID generation
+    /// * `metadata` - The metadata for the node
+    pub fn add_genesis_node(&mut self, payload: P, timestamp: u64, metadata: M) -> Result<Cid> {
+        let (cid, node) = self.prepare_genesis_node(payload, timestamp, metadata)?;
         self.persist_and_cache(cid, node)
     }
 
+    /// Adds a child node to the DAG with a specified timestamp.
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The payload data for the node
+    /// * `parents` - The parent CIDs for this node
+    /// * `genesis` - The genesis CID this node belongs to
+    /// * `timestamp` - The timestamp for CID generation
+    /// * `metadata` - The metadata for the node
     pub fn add_child_node(
         &mut self,
         payload: P,
         parents: Vec<Cid>,
         genesis: Cid,
+        timestamp: u64,
         metadata: M,
     ) -> Result<Cid> {
-        let (cid, node) = self.prepare_child_node(payload, parents, genesis, metadata)?;
+        let (cid, node) = self.prepare_child_node(payload, parents, genesis, timestamp, metadata)?;
         self.persist_and_cache(cid, node)
     }
 
-    pub fn prepare_genesis_node(&mut self, payload: P, metadata: M) -> Result<(Cid, Node<P, M>)> {
-        let timestamp = Self::current_timestamp()?;
-        self.prepare_genesis_node_with_timestamp(payload, timestamp, metadata)
-    }
-
-    /// Creates a genesis node with a specified timestamp (for replication).
-    ///
-    /// This method is used when importing operations from other replicas,
-    /// where the original timestamp must be preserved to maintain CID consistency.
+    /// Prepares a genesis node with a specified timestamp.
     ///
     /// # Arguments
     ///
     /// * `payload` - The payload data for the node
-    /// * `timestamp` - The timestamp to use (from the original node)
+    /// * `timestamp` - The timestamp for CID generation
     /// * `metadata` - The metadata for the node
     ///
     /// # Returns
     ///
     /// A tuple of (CID, Node) for the created genesis node
-    pub fn prepare_genesis_node_with_timestamp(
+    pub fn prepare_genesis_node(
         &mut self,
         payload: P,
         timestamp: u64,
@@ -116,34 +140,20 @@ where
         Ok((cid, node))
     }
 
-    pub fn prepare_child_node(
-        &mut self,
-        payload: P,
-        parents: Vec<Cid>,
-        genesis: Cid,
-        metadata: M,
-    ) -> Result<(Cid, Node<P, M>)> {
-        let timestamp = Self::current_timestamp()?;
-        self.prepare_child_node_with_timestamp(payload, parents, genesis, timestamp, metadata)
-    }
-
-    /// Creates a child node with a specified timestamp (for replication).
-    ///
-    /// This method is used when importing operations from other replicas,
-    /// where the original timestamp must be preserved to maintain CID consistency.
+    /// Prepares a child node with a specified timestamp.
     ///
     /// # Arguments
     ///
     /// * `payload` - The payload data for the node
     /// * `parents` - The parent CIDs for this node
     /// * `genesis` - The genesis CID this node belongs to
-    /// * `timestamp` - The timestamp to use (from the original node)
+    /// * `timestamp` - The timestamp for CID generation
     /// * `metadata` - The metadata for the node
     ///
     /// # Returns
     ///
     /// A tuple of (CID, Node) for the created child node
-    pub fn prepare_child_node_with_timestamp(
+    pub fn prepare_child_node(
         &mut self,
         payload: P,
         parents: Vec<Cid>,
@@ -239,13 +249,6 @@ where
         Ok(result)
     }
 
-    /// Returns the current time in nanoseconds since the Unix epoch.
-    fn current_timestamp() -> Result<u64> {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(GraphError::Timestamp)
-            .map(|d| d.as_nanos() as u64)
-    }
 
     /// Check if adding an edge (new node with parents) would create a cycle
     fn would_create_cycle_with(&mut self, new_cid: &Cid, parents: &[Cid]) -> Result<bool> {
@@ -812,7 +815,7 @@ mod tests {
     #[test]
     fn test_add_genesis_node() {
         let mut dag = DagGraph::new(MockStorage::new());
-        let cid = dag.add_genesis_node("test".to_string(), ()).unwrap();
+        let cid = dag.add_genesis_node("test".to_string(), 1000, ()).unwrap();
 
         let latest = dag.calculate_latest(&cid).unwrap();
         assert_eq!(latest, Some(cid));
@@ -821,9 +824,11 @@ mod tests {
     #[test]
     fn test_add_child_node() {
         let mut dag = DagGraph::new(MockStorage::new());
-        let genesis_cid = dag.add_genesis_node("genesis".to_string(), ()).unwrap();
+        let genesis_cid = dag
+            .add_genesis_node("genesis".to_string(), 1000, ())
+            .unwrap();
         let child_cid = dag
-            .add_child_node("child".to_string(), vec![genesis_cid], genesis_cid, ())
+            .add_child_node("child".to_string(), vec![genesis_cid], genesis_cid, 2000, ())
             .unwrap();
 
         let latest = dag.calculate_latest(&genesis_cid).unwrap();
@@ -878,7 +883,7 @@ mod tests {
 
         // Add a new node whose parent is B (should NOT create a cycle)
         let new_cid = dag
-            .add_node("payload".to_string(), vec![cid_b], BTreeMap::new())
+            .add_node("payload".to_string(), vec![cid_b], 3000, BTreeMap::new())
             .expect("add_node should succeed");
 
         // Verify edges_forward is updated (B -> new_cid)
@@ -901,13 +906,13 @@ mod tests {
 
         // The first add_node call builds the cache
         let cid1 = dag
-            .add_node("n1".to_string(), vec![cid_b], BTreeMap::new())
+            .add_node("n1".to_string(), vec![cid_b], 3000, BTreeMap::new())
             .expect("first add");
         let cache_size_before = dag.edges_forward.len();
 
         // The second add_node call reuses the cache
         let _cid2 = dag
-            .add_node("n2".to_string(), vec![cid1], BTreeMap::new())
+            .add_node("n2".to_string(), vec![cid1], 4000, BTreeMap::new())
             .expect("second add");
 
         // One extra node -> cache size should increase by exactly 1
@@ -1064,7 +1069,7 @@ mod tests {
         let mut dag = DagGraph::new(storage);
 
         let genesis = dag
-            .add_genesis_node("payload".to_string(), BTreeMap::new())
+            .add_genesis_node("payload".to_string(), 1000, BTreeMap::new())
             .unwrap();
 
         dag.remove_node(&genesis).unwrap();
@@ -1078,9 +1083,9 @@ mod tests {
         let mut dag = DagGraph::new(storage);
 
         let genesis = dag
-            .add_genesis_node("payload".to_string(), BTreeMap::new())
+            .add_genesis_node("payload".to_string(), 1000, BTreeMap::new())
             .unwrap();
-        dag.add_child_node("child".to_string(), vec![genesis], genesis, BTreeMap::new())
+        dag.add_child_node("child".to_string(), vec![genesis], genesis, 2000, BTreeMap::new())
             .unwrap();
 
         let err = dag.remove_node(&genesis);
@@ -1094,7 +1099,7 @@ mod tests {
         let mut dag = DagGraph::new(storage);
 
         let (genesis_cid, genesis_node) = dag
-            .prepare_genesis_node("payload".to_string(), BTreeMap::new())
+            .prepare_genesis_node("payload".to_string(), 1000, BTreeMap::new())
             .unwrap();
         dag.storage.put(&genesis_node).unwrap();
         dag.register_prepared_node(genesis_cid, &genesis_node)
@@ -1106,6 +1111,7 @@ mod tests {
                 "child".to_string(),
                 vec![genesis_cid],
                 genesis_cid,
+                2000,
                 BTreeMap::new(),
             )
             .unwrap();

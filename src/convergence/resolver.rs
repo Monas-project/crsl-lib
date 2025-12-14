@@ -24,11 +24,21 @@ where
         }
     }
 
+    /// Creates a merge node from the given heads.
+    ///
+    /// # Arguments
+    ///
+    /// * `heads` - The head CIDs to merge
+    /// * `dag` - The DAG graph
+    /// * `genesis` - The genesis CID
+    /// * `timestamp` - The timestamp to use for the merge node
+    /// * `policy` - The merge policy to use
     pub fn create_merge_node<S>(
         &self,
         heads: &[Cid],
         dag: &DagGraph<S, P, M>,
         genesis: Cid,
+        timestamp: u64,
         policy: &dyn MergePolicy<P>,
     ) -> CrdtResult<Node<P, M>>
     where
@@ -45,7 +55,6 @@ where
         let inputs = self.collect_inputs(heads, dag)?;
         let merged_payload = policy.resolve(&inputs);
         let metadata = self.merge_metadata(heads, dag)?;
-        let timestamp = Self::current_timestamp()?;
         Ok(Node::new_child(
             merged_payload,
             heads.to_vec(),
@@ -94,14 +103,6 @@ where
             .map_err(CrdtError::Graph)?
             .ok_or_else(|| CrdtError::Internal(format!("Head node not found: {first_head}")))?;
         Ok(node.metadata().clone())
-    }
-
-    fn current_timestamp() -> CrdtResult<u64> {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| CrdtError::Internal(format!("timestamp error: {e}")))
-            .map(|duration| duration.as_nanos() as u64)
     }
 }
 
@@ -231,15 +232,22 @@ mod tests {
         };
 
         let resolver = ConflictResolver::<String, ContentMetadata>::new();
+        let merge_timestamp = 100;
         let merge_node = resolver
-            .create_merge_node(&[head_a_cid, head_b_cid], &dag, genesis_cid, &policy)
+            .create_merge_node(
+                &[head_a_cid, head_b_cid],
+                &dag,
+                genesis_cid,
+                merge_timestamp,
+                &policy,
+            )
             .unwrap();
 
         assert_eq!(merge_node.payload(), "merged");
         assert_eq!(merge_node.parents(), &vec![head_a_cid, head_b_cid]);
         assert_eq!(merge_node.metadata(), &metadata);
         assert_eq!(merge_node.genesis, Some(genesis_cid));
-        assert!(merge_node.timestamp() > 0);
+        assert_eq!(merge_node.timestamp(), merge_timestamp);
     }
 
     #[test]
@@ -249,7 +257,7 @@ mod tests {
         let policy = LwwMergePolicy;
         let genesis = create_test_cid("genesis");
 
-        let result = resolver.create_merge_node(&[], &dag, genesis, &policy);
+        let result = resolver.create_merge_node(&[], &dag, genesis, 100, &policy);
 
         assert!(matches!(
             result,
@@ -265,7 +273,7 @@ mod tests {
         let missing_head = create_test_cid("missing-head");
         let genesis = create_test_cid("genesis");
 
-        let result = resolver.create_merge_node(&[missing_head], &dag, genesis, &policy);
+        let result = resolver.create_merge_node(&[missing_head], &dag, genesis, 100, &policy);
 
         assert!(matches!(
             result,

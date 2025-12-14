@@ -61,6 +61,11 @@ pub struct Operation<ContentId, T> {
     pub author: Author,
     #[serde(default = "Vec::new")]
     pub parents: Vec<ContentId>,
+    /// Optional timestamp for the DAG node (used for replication).
+    /// When set, this timestamp is used for CID generation instead of the current time.
+    /// This ensures CID consistency across replicas.
+    #[serde(default)]
+    pub node_timestamp: Option<Timestamp>,
 }
 
 impl<ContentId, T> Operation<ContentId, T>
@@ -89,6 +94,41 @@ where
             timestamp,
             author,
             parents: Vec::new(),
+            node_timestamp: None,
+        }
+    }
+
+    /// Creates a new operation with a specified node timestamp (for replication).
+    ///
+    /// When importing operations from other replicas, use this constructor
+    /// to preserve the original node timestamp for CID consistency.
+    ///
+    /// # Arguments
+    ///
+    /// * `genesis` - ID of the content being operated on
+    /// * `kind` - Type of operation and its payload
+    /// * `author` - User/system performing the operation
+    /// * `node_timestamp` - The original DAG node timestamp from the source replica
+    ///
+    /// # Returns
+    ///
+    /// A newly created operation object with the specified node timestamp
+    pub fn with_node_timestamp(
+        genesis: ContentId,
+        kind: OperationType<T>,
+        author: Author,
+        node_timestamp: u64,
+    ) -> Self {
+        let timestamp = next_monotonic_timestamp();
+        let id = Ulid::new();
+        Self {
+            id,
+            genesis,
+            kind,
+            timestamp,
+            author,
+            parents: Vec::new(),
+            node_timestamp: Some(node_timestamp),
         }
     }
 
