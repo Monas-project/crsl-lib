@@ -98,40 +98,6 @@ where
         }
     }
 
-    /// Creates a new operation with a specified node timestamp (for replication).
-    ///
-    /// When importing operations from other replicas, use this constructor
-    /// to preserve the original node timestamp for CID consistency.
-    ///
-    /// # Arguments
-    ///
-    /// * `genesis` - ID of the content being operated on
-    /// * `kind` - Type of operation and its payload
-    /// * `author` - User/system performing the operation
-    /// * `node_timestamp` - The original DAG node timestamp from the source replica
-    ///
-    /// # Returns
-    ///
-    /// A newly created operation object with the specified node timestamp
-    pub fn with_node_timestamp(
-        genesis: ContentId,
-        kind: OperationType<T>,
-        author: Author,
-        node_timestamp: u64,
-    ) -> Self {
-        let timestamp = next_monotonic_timestamp();
-        let id = Ulid::new();
-        Self {
-            id,
-            genesis,
-            kind,
-            timestamp,
-            author,
-            parents: Vec::new(),
-            node_timestamp: Some(node_timestamp),
-        }
-    }
-
     /// Checks if this operation is of the given kind
     pub fn is_type(&self, kind: OperationKind) -> bool {
         self.kind.as_kind() == kind
