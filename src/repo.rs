@@ -3,6 +3,7 @@ use crate::convergence::{
     resolver::ConflictResolver,
 };
 use crate::crdt::error::{CrdtError, Result};
+use crate::crdt::timestamp::next_monotonic_timestamp;
 use crate::storage::{BatchError, LeveldbBatchGuard, SharedLeveldb, SharedLeveldbAccess};
 use crate::{
     crdt::{
@@ -54,9 +55,29 @@ where
         }
     }
 
+    /// Commits an operation to the repository.
+    ///
+    /// If `op.node_timestamp` is set, the operation is treated as an import from
+    /// another replica, preserving the original timestamp for CID consistency.
+    /// Otherwise, the current time is used for the DAG node timestamp.
+    ///
+    /// # Arguments
+    ///
+    /// * `op` - The operation to commit
+    ///
+    /// # Returns
+    ///
+    /// The CID of the committed node
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Merge operations are attempted to be committed manually (without node_timestamp)
+    /// - The operation cannot be applied
+    /// - There are consistency issues with the DAG structure
     pub fn commit_operation(&mut self, op: Operation<Cid, Payload>) -> Result<Cid> {
-        // Recently, Merge operations cannot be manually committed
-        if matches!(op.kind, OperationType::Merge(_)) {
+        // Merge operations can only be committed via import (with node_timestamp) or auto-merge
+        if matches!(op.kind, OperationType::Merge(_)) && op.node_timestamp.is_none() {
             return Err(CrdtError::Internal(
                 "Merge operations cannot be manually committed".to_string(),
             ));
@@ -180,22 +201,29 @@ where
         let batch_guard = Self::begin_shared_batch(&shared)?;
         let mut pending_nodes: Vec<PendingNode> = Vec::new();
 
-        if !skip_auto_merge {
+        // If node_timestamp is not set, run auto-merge logic
+        if !skip_auto_merge && op.node_timestamp.is_none() {
             self.ensure_parent_context(&mut op, &mut pending_nodes)?;
         }
 
+        // Use specified timestamp or generate a new one
+        let timestamp = op.node_timestamp.unwrap_or_else(next_monotonic_timestamp);
+
         let cid = match op.kind.clone() {
             OperationType::Create(payload) => {
-                self.stage_create(payload, &mut op, &mut pending_nodes)?
+                self.stage_create(payload, &mut op, timestamp, &mut pending_nodes)?
             }
             OperationType::Update(payload) => {
-                self.stage_update(payload, &op, &mut pending_nodes)?
+                self.stage_update(payload, &op, timestamp, &mut pending_nodes)?
             }
-            OperationType::Delete => self.stage_delete(&op, &mut pending_nodes)?,
-            OperationType::Merge(_) => {
-                return Err(CrdtError::Internal(
-                    "Merge operations must be committed via auto-merge".to_string(),
-                ))
+            OperationType::Delete => self.stage_delete(&op, timestamp, &mut pending_nodes)?,
+            OperationType::Merge(payload) => {
+                if op.node_timestamp.is_none() {
+                    return Err(CrdtError::Internal(
+                        "Merge operations must be committed via auto-merge".to_string(),
+                    ));
+                }
+                self.stage_merge(payload, &op, timestamp, &mut pending_nodes)?
             }
         };
 
@@ -267,37 +295,63 @@ where
         Ok(())
     }
 
+    /// Stages a Create operation.
+    ///
+    /// If `op.node_timestamp` is set (import), verifies CID matches op.genesis.
+    /// Otherwise, sets op.genesis to the computed CID.
     fn stage_create(
         &mut self,
         payload: Payload,
         op: &mut Operation<Cid, Payload>,
+        timestamp: u64,
         pending_nodes: &mut Vec<PendingNode>,
     ) -> Result<Cid> {
-        let (genesis_cid, node) = self
-            .dag
-            .prepare_genesis_node(payload, ContentMetadata::default())?;
-        let cid = self.stage_prepared_node(genesis_cid, node, pending_nodes)?;
-        op.genesis = cid;
-        Ok(cid)
+        let (genesis_cid, node) =
+            self.dag
+                .prepare_genesis_node(payload, timestamp, ContentMetadata::default())?;
+
+        if op.node_timestamp.is_some() {
+            // Import: verify that the computed CID matches the expected genesis
+            if genesis_cid != op.genesis {
+                return Err(CrdtError::Internal(format!(
+                    "CID mismatch during import: expected {}, got {}",
+                    op.genesis, genesis_cid
+                )));
+            }
+        } else {
+            // Local create: set genesis to the computed CID
+            op.genesis = genesis_cid;
+        }
+
+        self.stage_prepared_node(genesis_cid, node, pending_nodes)
     }
 
+    /// Stages an Update operation.
     fn stage_update(
         &mut self,
         payload: Payload,
         op: &Operation<Cid, Payload>,
+        timestamp: u64,
         pending_nodes: &mut Vec<PendingNode>,
     ) -> Result<Cid> {
+        let lenient = op.node_timestamp.is_some();
         let metadata =
-            self.resolve_metadata_for_commit(&op.genesis, &op.parents, pending_nodes.as_slice())?;
-        let (cid, node) =
-            self.dag
-                .prepare_child_node(payload, op.parents.clone(), op.genesis, metadata)?;
+            self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), lenient)?;
+        let (cid, node) = self.dag.prepare_child_node(
+            payload,
+            op.parents.clone(),
+            op.genesis,
+            timestamp,
+            metadata,
+        )?;
         self.stage_prepared_node(cid, node, pending_nodes)
     }
 
+    /// Stages a Delete operation.
     fn stage_delete(
         &mut self,
         op: &Operation<Cid, Payload>,
+        timestamp: u64,
         pending_nodes: &mut Vec<PendingNode>,
     ) -> Result<Cid> {
         let ops = self.state.get_operations_by_genesis(&op.genesis)?;
@@ -309,7 +363,7 @@ where
                     .cloned()
                     .map(|payload| (operation.timestamp, payload))
             })
-            .max_by_key(|(timestamp, _)| *timestamp)
+            .max_by_key(|(ts, _)| *ts)
             .map(|(_, payload)| payload)
             .ok_or_else(|| {
                 CrdtError::Internal(format!(
@@ -318,11 +372,37 @@ where
                 ))
             })?;
 
+        let lenient = op.node_timestamp.is_some();
         let metadata =
-            self.resolve_metadata_for_commit(&op.genesis, &op.parents, pending_nodes.as_slice())?;
-        let (cid, node) =
-            self.dag
-                .prepare_child_node(last_payload, op.parents.clone(), op.genesis, metadata)?;
+            self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), lenient)?;
+        let (cid, node) = self.dag.prepare_child_node(
+            last_payload,
+            op.parents.clone(),
+            op.genesis,
+            timestamp,
+            metadata,
+        )?;
+        self.stage_prepared_node(cid, node, pending_nodes)
+    }
+
+    /// Stages a Merge operation (only for imports).
+    fn stage_merge(
+        &mut self,
+        payload: Payload,
+        op: &Operation<Cid, Payload>,
+        timestamp: u64,
+        pending_nodes: &mut Vec<PendingNode>,
+    ) -> Result<Cid> {
+        // Merge operations are always imports, so use lenient metadata resolution
+        let metadata =
+            self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), true)?;
+        let (cid, node) = self.dag.prepare_child_node(
+            payload,
+            op.parents.clone(),
+            op.genesis,
+            timestamp,
+            metadata,
+        )?;
         self.stage_prepared_node(cid, node, pending_nodes)
     }
 
@@ -385,11 +465,16 @@ where
         let policy_type = genesis_node.metadata().policy_type();
         let policy = self.create_policy(policy_type)?;
 
-        let merge_node =
-            self.resolver
-                .create_merge_node(&heads, &self.dag, *genesis, policy.as_ref())?;
-
         self.validate_parent_genesis(genesis, &heads)?;
+
+        let merge_timestamp = next_monotonic_timestamp();
+        let merge_node = self.resolver.create_merge_node(
+            &heads,
+            &self.dag,
+            *genesis,
+            merge_timestamp,
+            policy.as_ref(),
+        )?;
 
         let (merge_cid, node) = self
             .dag
@@ -397,6 +482,7 @@ where
                 merge_node.payload().clone(),
                 heads.clone(),
                 *genesis,
+                merge_timestamp,
                 merge_node.metadata().clone(),
             )
             .map_err(CrdtError::Graph)?;
@@ -454,32 +540,50 @@ where
         }
     }
 
-    fn resolve_metadata_for_commit(
+    /// Resolves metadata for an operation.
+    ///
+    /// # Arguments
+    /// * `genesis` - The genesis CID
+    /// * `parents` - The parent CIDs
+    /// * `pending_nodes` - Pending nodes that haven't been committed yet
+    /// * `lenient` - If true, returns default metadata when nodes not found (for imports)
+    fn resolve_metadata(
         &self,
         genesis: &Cid,
         parents: &[Cid],
         pending_nodes: &[PendingNode],
+        lenient: bool,
     ) -> Result<ContentMetadata> {
+        // Try to get metadata from parents first
         if let Some(parent) = parents.first() {
             if let Some(pending) = pending_nodes.iter().find(|pending| &pending.cid == parent) {
                 return Ok(pending.metadata.clone());
             }
-            let node = self
-                .dag
-                .get_node(parent)
-                .map_err(CrdtError::Graph)?
-                .ok_or_else(|| CrdtError::Internal(format!("Parent node not found: {parent}")))?;
-            Ok(node.metadata().clone())
-        } else {
-            if let Some(pending) = pending_nodes.iter().find(|pending| &pending.cid == genesis) {
-                return Ok(pending.metadata.clone());
+            match self.dag.get_node(parent) {
+                Ok(Some(node)) => return Ok(node.metadata().clone()),
+                Ok(None) if !lenient => {
+                    return Err(CrdtError::Internal(format!(
+                        "Parent node not found: {parent}"
+                    )))
+                }
+                Err(e) if !lenient => return Err(CrdtError::Graph(e)),
+                _ => {} // lenient mode: continue to try genesis
             }
-            let genesis_node = self
-                .dag
-                .get_node(genesis)
-                .map_err(CrdtError::Graph)?
-                .ok_or_else(|| CrdtError::Internal(format!("Genesis not found: {genesis}")))?;
-            Ok(genesis_node.metadata().clone())
+        }
+
+        // Try to get metadata from genesis
+        if let Some(pending) = pending_nodes.iter().find(|pending| &pending.cid == genesis) {
+            return Ok(pending.metadata.clone());
+        }
+        match self.dag.get_node(genesis) {
+            Ok(Some(genesis_node)) => Ok(genesis_node.metadata().clone()),
+            Ok(None) if lenient => Ok(ContentMetadata::default()),
+            Ok(None) => Err(CrdtError::Internal(format!("Genesis not found: {genesis}"))),
+            Err(_) if lenient => {
+                // In lenient mode, return default metadata on error
+                Ok(ContentMetadata::default())
+            }
+            Err(e) => Err(CrdtError::Graph(e)),
         }
     }
     fn node_characteristics(&self, cid: &Cid) -> Result<(bool, u64)> {
@@ -1063,6 +1167,7 @@ mod tests {
             .dag
             .prepare_genesis_node(
                 TestPayload("dangling".to_string()),
+                1000,
                 ContentMetadata::default(),
             )
             .unwrap();
@@ -1367,6 +1472,7 @@ mod tests {
                 branch_a_payload.clone(),
                 vec![genesis],
                 genesis,
+                2000,
                 ContentMetadata::default(),
             )
             .unwrap();
@@ -1385,6 +1491,7 @@ mod tests {
                 branch_b_payload.clone(),
                 vec![genesis],
                 genesis,
+                3000,
                 ContentMetadata::default(),
             )
             .unwrap();
@@ -1425,6 +1532,7 @@ mod tests {
                 branch_a_payload.clone(),
                 vec![genesis],
                 genesis,
+                2000,
                 ContentMetadata::default(),
             )
             .unwrap();
@@ -1445,6 +1553,7 @@ mod tests {
                 branch_b_payload.clone(),
                 vec![genesis],
                 genesis,
+                3000,
                 ContentMetadata::default(),
             )
             .unwrap();
@@ -1463,6 +1572,7 @@ mod tests {
                 merge_payload.clone(),
                 vec![branch_a, branch_b],
                 genesis,
+                4000,
                 ContentMetadata::default(),
             )
             .unwrap();
@@ -1483,6 +1593,7 @@ mod tests {
                 latest_payload.clone(),
                 vec![merge_cid],
                 genesis,
+                5000,
                 ContentMetadata::default(),
             )
             .unwrap();
@@ -1506,6 +1617,127 @@ mod tests {
             assert!(branch_pos < merge_pos);
         } else {
             panic!("branch or merge node missing from linear history");
+        }
+    }
+
+    #[test]
+    fn test_import_operation_preserves_cid() {
+        let (mut repo1, _dir1) = setup_test_repo();
+        let (mut repo2, _dir2) = setup_test_repo();
+
+        // Create content in repo1
+        let initial_genesis = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"import-test").unwrap(),
+        );
+        let payload = TestPayload("test content".to_string());
+        let op = make_test_operation(initial_genesis, OperationType::Create(payload.clone()));
+
+        let cid1 = repo1.commit_operation(op.clone()).unwrap();
+
+        // Get the node timestamp from repo1
+        let node = repo1.dag.get_node(&cid1).unwrap().unwrap();
+        let node_timestamp = node.timestamp();
+
+        // Create the operation with the correct genesis CID and node_timestamp for import
+        let mut import_op = make_test_operation(cid1, OperationType::Create(payload));
+        import_op.genesis = cid1;
+        import_op.node_timestamp = Some(node_timestamp);
+
+        // Import the operation into repo2
+        let cid2 = repo2.commit_operation(import_op).unwrap();
+
+        // CIDs should match
+        assert_eq!(cid1, cid2, "CIDs should be identical after import");
+
+        // Verify the content can be retrieved using the original CID
+        assert!(
+            repo2.latest(&cid1).is_some(),
+            "Should be able to get latest using original CID"
+        );
+        assert_eq!(repo2.latest(&cid1).unwrap(), cid1);
+    }
+
+    #[test]
+    fn test_import_operation_update_preserves_cid() {
+        let (mut repo1, _dir1) = setup_test_repo();
+        let (mut repo2, _dir2) = setup_test_repo();
+
+        // Create initial content in repo1
+        let initial_genesis = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"import-update-test").unwrap(),
+        );
+        let create_payload = TestPayload("initial".to_string());
+        let create_op = make_test_operation(
+            initial_genesis,
+            OperationType::Create(create_payload.clone()),
+        );
+        let genesis_cid = repo1.commit_operation(create_op.clone()).unwrap();
+
+        // Get genesis node timestamp
+        let genesis_node = repo1.dag.get_node(&genesis_cid).unwrap().unwrap();
+        let genesis_timestamp = genesis_node.timestamp();
+
+        // Import genesis into repo2
+        let mut import_create_op =
+            make_test_operation(genesis_cid, OperationType::Create(create_payload));
+        import_create_op.genesis = genesis_cid;
+        import_create_op.node_timestamp = Some(genesis_timestamp);
+        let imported_genesis = repo2.commit_operation(import_create_op).unwrap();
+        assert_eq!(genesis_cid, imported_genesis);
+
+        // Create update in repo1
+        sleep_for_ordering();
+        let update_payload = TestPayload("updated".to_string());
+        let update_op =
+            make_test_operation(genesis_cid, OperationType::Update(update_payload.clone()));
+        let update_cid = repo1.commit_operation(update_op).unwrap();
+
+        // Get update node info from repo1
+        let update_node = repo1.dag.get_node(&update_cid).unwrap().unwrap();
+        let update_timestamp = update_node.timestamp();
+        let update_parents = update_node.parents().clone();
+
+        // Import update into repo2
+        let mut import_update_op =
+            make_test_operation(genesis_cid, OperationType::Update(update_payload));
+        import_update_op.parents = update_parents;
+        import_update_op.node_timestamp = Some(update_timestamp);
+        let imported_update = repo2.commit_operation(import_update_op).unwrap();
+
+        // CIDs should match
+        assert_eq!(
+            update_cid, imported_update,
+            "Update CIDs should be identical after import"
+        );
+
+        // Verify latest points to the update
+        assert_eq!(repo2.latest(&genesis_cid).unwrap(), update_cid);
+    }
+
+    #[test]
+    fn test_import_operation_rejects_cid_mismatch() {
+        let (mut repo, _dir) = setup_test_repo();
+
+        // Create an operation with a genesis CID that won't match the computed CID
+        let wrong_genesis = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"wrong-genesis").unwrap(),
+        );
+        let payload = TestPayload("test content".to_string());
+        let mut op = make_test_operation(wrong_genesis, OperationType::Create(payload));
+        op.genesis = wrong_genesis; // This won't match the computed CID
+        op.node_timestamp = Some(12345); // Set node_timestamp to trigger import path
+
+        // Import should fail due to CID mismatch
+        let result = repo.commit_operation(op);
+        assert!(result.is_err());
+        match result {
+            Err(CrdtError::Internal(msg)) => {
+                assert!(msg.contains("CID mismatch"));
+            }
+            other => panic!("Expected CID mismatch error, got: {:?}", other),
         }
     }
 }

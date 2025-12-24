@@ -52,6 +52,7 @@ mod tests {
             timestamp: ts,
             author: "test".into(),
             parents: Vec::new(),
+            node_timestamp: None,
         }
     }
 
@@ -69,6 +70,7 @@ mod tests {
             timestamp: ts,
             author: "test".into(),
             parents: Vec::new(),
+            node_timestamp: None,
         }
     }
 

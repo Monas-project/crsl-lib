@@ -61,6 +61,11 @@ pub struct Operation<ContentId, T> {
     pub author: Author,
     #[serde(default = "Vec::new")]
     pub parents: Vec<ContentId>,
+    /// Optional timestamp for the DAG node (used for replication).
+    /// When set, this timestamp is used for CID generation instead of the current time.
+    /// This ensures CID consistency across replicas.
+    #[serde(default)]
+    pub node_timestamp: Option<Timestamp>,
 }
 
 impl<ContentId, T> Operation<ContentId, T>
@@ -89,6 +94,7 @@ where
             timestamp,
             author,
             parents: Vec::new(),
+            node_timestamp: None,
         }
     }
 
