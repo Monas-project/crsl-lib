@@ -1,8 +1,8 @@
+use super::cid::ContentId;
 use super::error::{DaslError, NodeValidationError, Result};
 use cid::Cid;
 use multihash::Multihash;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 /// For more details on these multicodec codes, see:
@@ -75,9 +75,7 @@ where
     /// Returns a NodeError if serialization or hashing fails
     pub fn content_id(&self) -> Result<Cid> {
         let buf = self.to_bytes()?;
-        let hash = Sha256::digest(&buf);
-        let mh = Multihash::<64>::wrap(SHA2_256_CODE, &hash)?;
-        Ok(Cid::new_v1(RAW_CODE, mh))
+        Ok(ContentId::new(&buf)?.0)
     }
 
     /// Serializes this node using CBOR
