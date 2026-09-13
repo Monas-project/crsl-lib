@@ -80,10 +80,20 @@ where
                 .get_node(&cid)
                 .map_err(CrdtError::Graph)?
                 .ok_or_else(|| CrdtError::Internal(format!("Head node not found: {cid}")))?;
-            inputs.push(ResolveInput::new(
+            // A parent that is not in storage is not an error here: a replica
+            // may hold a head whose ancestry has not fully synced yet. The
+            // policy sees fewer parents and must cope (LWW never looks).
+            let mut parent_payloads = Vec::with_capacity(node.parents().len());
+            for parent in node.parents() {
+                if let Some(parent_node) = dag.get_node(parent).map_err(CrdtError::Graph)? {
+                    parent_payloads.push(parent_node.payload().clone());
+                }
+            }
+            inputs.push(ResolveInput::with_parents(
                 cid,
                 node.payload().clone(),
                 node.timestamp(),
+                parent_payloads,
             ));
         }
         Ok(inputs)
@@ -191,6 +201,63 @@ mod tests {
     fn create_test_cid(label: &str) -> Cid {
         let digest = Multihash::<64>::wrap(0x12, label.as_bytes()).unwrap();
         Cid::new_v1(0x55, digest)
+    }
+
+    /// Each `ResolveInput` handed to the policy carries its head's parent
+    /// payloads, so a policy can tell a head that changed the value from one
+    /// that only re-committed its parent's.
+    #[test]
+    fn create_merge_node_attaches_parent_payloads() {
+        struct Capture(std::sync::Mutex<Vec<Vec<String>>>);
+        impl MergePolicy<String> for Capture {
+            fn resolve(&self, nodes: &[ResolveInput<String>]) -> String {
+                let mut seen = self.0.lock().unwrap();
+                for n in nodes {
+                    seen.push(n.parent_payloads.clone());
+                }
+                nodes[0].payload.clone()
+            }
+            fn name(&self) -> &str {
+                "capture"
+            }
+        }
+
+        let storage = MemoryNodeStorage::<String, ContentMetadata>::default();
+        let dag = DagGraph::new(storage.clone());
+        let metadata = ContentMetadata::with_policy("capture");
+        let genesis_node = Node::new_genesis("genesis".to_string(), 1, metadata.clone());
+        let genesis_cid = genesis_node.content_id().unwrap();
+        dag.storage.put(&genesis_node).unwrap();
+        let head_a = Node::new_child(
+            "payload-a".to_string(),
+            vec![genesis_cid],
+            genesis_cid,
+            10,
+            metadata.clone(),
+        );
+        let head_a_cid = head_a.content_id().unwrap();
+        dag.storage.put(&head_a).unwrap();
+        let head_b = Node::new_child(
+            "payload-b".to_string(),
+            vec![genesis_cid],
+            genesis_cid,
+            11,
+            metadata,
+        );
+        let head_b_cid = head_b.content_id().unwrap();
+        dag.storage.put(&head_b).unwrap();
+
+        let policy = Capture(std::sync::Mutex::new(Vec::new()));
+        let resolver = ConflictResolver::<String, ContentMetadata>::new();
+        resolver
+            .create_merge_node(&[head_a_cid, head_b_cid], &dag, genesis_cid, 20, &policy)
+            .unwrap();
+
+        let seen = policy.0.into_inner().unwrap();
+        assert_eq!(
+            seen,
+            vec![vec!["genesis".to_string()], vec!["genesis".to_string()]]
+        );
     }
 
     #[test]
