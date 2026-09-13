@@ -115,6 +115,45 @@ where
         self.dag.calculate_latest(genesis_id).ok().flatten()
     }
 
+    /// The current heads of a content: every node no other node names as a
+    /// parent. One head means the history is linear at the tip; more means
+    /// concurrent versions are waiting to be merged.
+    pub fn heads(&self, genesis: &Cid) -> Result<Vec<Cid>> {
+        self.find_heads(genesis)
+    }
+
+    /// Merge concurrent heads now, and return the resulting single head.
+    ///
+    /// Auto-merge normally runs lazily, inside the next commit. That is too
+    /// late for a caller that wants to *read* the converged state first —
+    /// to copy the current payload into a new version, or to evaluate a
+    /// policy it carries — because [`latest`](Self::latest) alone picks one
+    /// of the concurrent heads by timestamp and says nothing about the
+    /// others. Calling this first makes the read see what the merge policy
+    /// decides, not what one branch happens to hold.
+    ///
+    /// Commits the merge node exactly as the lazy path would; returns
+    /// `Ok(None)` when the content has no versions, and the existing head
+    /// when there was nothing to merge.
+    pub fn merge_heads(&mut self, genesis: &Cid) -> Result<Option<Cid>> {
+        let shared = self.shared_leveldb()?;
+        let batch_guard = Self::begin_shared_batch(&shared)?;
+        let mut pending_nodes: Vec<PendingNode> = Vec::new();
+
+        let merged = match self.check_and_merge(genesis, &mut pending_nodes) {
+            Ok(merged) => merged,
+            Err(err) => {
+                self.rollback_pending_nodes(&pending_nodes);
+                return Err(err);
+            }
+        };
+        if let Err(status) = batch_guard.commit() {
+            self.rollback_pending_nodes(&pending_nodes);
+            return Err(CrdtError::Storage(status));
+        }
+        Ok(merged.or_else(|| self.latest(genesis)))
+    }
+
     /// Convenience wrapper around `DagGraph::get_genesis`
     pub fn get_genesis(&self, cid: &Cid) -> Result<Cid> {
         self.dag.get_genesis(cid).map_err(CrdtError::Graph)
@@ -1499,6 +1538,52 @@ mod tests {
         for (_, parents) in seen.iter() {
             assert_eq!(parents, &vec!["root".to_string()]);
         }
+    }
+
+    /// `merge_heads` converges concurrent heads on demand, so a caller can
+    /// read the merged payload before committing on top of it. Without it,
+    /// `latest` returns one branch's tip and the merge only happens inside
+    /// the next commit — after the caller has already copied the wrong value.
+    #[test]
+    fn merge_heads_converges_before_the_next_commit() {
+        let (mut repo, _dir) = setup_test_repo();
+        let initial_genesis = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"mergeHeads").unwrap(),
+        );
+        let create = make_test_operation(
+            initial_genesis,
+            OperationType::Create(TestPayload("root".into())),
+        );
+        let genesis = repo.commit_operation(create).unwrap();
+        let mut a = make_test_operation(genesis, OperationType::Update(TestPayload("a".into())));
+        a.parents.push(genesis);
+        let a_cid = repo.commit_operation(a).unwrap();
+        sleep_for_ordering();
+        let mut b = make_test_operation(genesis, OperationType::Update(TestPayload("b".into())));
+        b.parents.push(genesis);
+        let b_cid = repo.commit_operation(b).unwrap();
+
+        assert_eq!(repo.heads(&genesis).unwrap().len(), 2);
+        // `latest` alone just picks the newer branch.
+        assert_eq!(repo.latest(&genesis), Some(b_cid));
+
+        let merged = repo.merge_heads(&genesis).unwrap().unwrap();
+        assert_ne!(merged, a_cid);
+        assert_ne!(merged, b_cid);
+        assert_eq!(repo.heads(&genesis).unwrap(), vec![merged]);
+        assert_eq!(repo.latest(&genesis), Some(merged));
+        let node = repo.dag.get_node(&merged).unwrap().unwrap();
+        assert_eq!(node.parents().len(), 2);
+
+        // Idempotent: nothing left to merge, same head comes back.
+        assert_eq!(repo.merge_heads(&genesis).unwrap(), Some(merged));
+        // Unknown content: nothing to merge, no head.
+        let unknown = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"nothing").unwrap(),
+        );
+        assert_eq!(repo.merge_heads(&unknown).unwrap(), None);
     }
 
     /// Without an installed policy, the genesis metadata's policy_type still
