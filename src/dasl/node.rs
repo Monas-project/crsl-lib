@@ -1,14 +1,8 @@
+use super::cid::ContentId;
 use super::error::{DaslError, NodeValidationError, Result};
 use cid::Cid;
-use multihash::Multihash;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-
-/// For more details on these multicodec codes, see:
-/// https://github.com/multiformats/multicodec/blob/master/table.csv
-const SHA2_256_CODE: u64 = 0x12;
-const RAW_CODE: u64 = 0x55;
 
 /// This structure can store any type of payload data and metadata, making it versatile for various use cases.
 ///
@@ -75,9 +69,7 @@ where
     /// Returns a NodeError if serialization or hashing fails
     pub fn content_id(&self) -> Result<Cid> {
         let buf = self.to_bytes()?;
-        let hash = Sha256::digest(&buf);
-        let mh = Multihash::<64>::wrap(SHA2_256_CODE, &hash)?;
-        Ok(Cid::new_v1(RAW_CODE, mh))
+        Ok(ContentId::new(&buf)?.0)
     }
 
     /// Serializes this node using CBOR
@@ -155,13 +147,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::{Digest, Sha256};
     use std::collections::BTreeMap;
 
     fn create_test_content_id(data: &[u8]) -> Cid {
-        let hash = Sha256::digest(data);
-        let digest = Multihash::<64>::wrap(SHA2_256_CODE, &hash).unwrap();
-        Cid::new_v1(RAW_CODE, digest)
+        ContentId::new(data).unwrap().0
     }
 
     #[test]
