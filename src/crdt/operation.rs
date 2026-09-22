@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use ulid::Ulid;
 
+use crate::convergence::metadata::ContentMetadata;
 use crate::crdt::timestamp::next_monotonic_timestamp;
 
 /// Unique identifier for operations (based on Ulid)
@@ -66,6 +67,17 @@ pub struct Operation<ContentId, T> {
     /// This ensures CID consistency across replicas.
     #[serde(default)]
     pub node_timestamp: Option<Timestamp>,
+    /// Exact DAG metadata for replication. Missing on legacy operations.
+    /// A local Create may explicitly select metadata here; otherwise the Repo's
+    /// installed policy is recorded. Imported Creates never infer it from the
+    /// receiver's policy: absence means the historical default metadata.
+    /// Repo commits populate this for every node. Updates and Merges carrying
+    /// their payload can therefore reconstruct metadata even before ancestry
+    /// arrives; Deletes still require existing payload history.
+    /// Local Updates/Deletes inherit metadata instead of using this field to
+    /// change policy. Keep the exact metadata representation, not just its name.
+    #[serde(default)]
+    pub node_metadata: Option<ContentMetadata>,
 }
 
 impl<ContentId, T> Operation<ContentId, T>
@@ -95,6 +107,7 @@ where
             author,
             parents: Vec::new(),
             node_timestamp: None,
+            node_metadata: None,
         }
     }
 

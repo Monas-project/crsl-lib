@@ -15,8 +15,10 @@ pub struct ResolveInput<P> {
     /// that distinction — it does not know the payload's shape — so it hands
     /// the parents over and lets the policy compare.
     ///
-    /// Empty for a genesis head (no parents) and for inputs constructed by
-    /// callers that have no DAG at hand; `LwwMergePolicy` ignores it.
+    /// The resolver supplies all immediate parents when the policy requires
+    /// them, or returns an error if any are missing. Empty for a genesis head,
+    /// policies that opt out of parent payloads (such as `LwwMergePolicy`),
+    /// and inputs constructed by callers that have no DAG at hand.
     pub parent_payloads: Vec<P>,
 }
 
@@ -47,11 +49,28 @@ impl<P> ResolveInput<P> {
 /// application whose payload is a composite — fields with different
 /// convergence rules — supplies its own implementation through
 /// [`Repo::with_merge_policy`](crate::repo::Repo::with_merge_policy); the
-/// library then calls it for every auto-merge instead of the named policy.
+/// library calls it only when its name matches the genesis metadata. The
+/// built-in `lww` name is reserved and always selects the library's LWW rule.
 pub trait MergePolicy<P>: Send + Sync {
+    /// Whether resolution needs the complete payloads of each head's immediate parents.
+    ///
+    /// Defaults to true: the resolver returns a missing-node error before
+    /// invoking `resolve` if any parent has not synced yet. The caller can
+    /// retry after importing the missing parents; no merge is persisted.
+    /// Return false only when resolution is independent of parent payloads.
+    /// In that case the resolver does not load them and supplies empty vectors.
+    fn requires_parent_payloads(&self) -> bool {
+        true
+    }
+
     /// Resolve competing nodes into a single payload.
     fn resolve(&self, nodes: &[ResolveInput<P>]) -> P;
 
-    /// Return a descriptive name of the policy (e.g. "lww").
+    /// Return the stable policy identifier recorded in genesis metadata.
+    ///
+    /// All implementations sharing a name must have identical deterministic
+    /// merge semantics across replicas. Use a new name when those semantics
+    /// change; installing it does not migrate existing content. `lww` is
+    /// reserved for the built-in rule, not an application override.
     fn name(&self) -> &str;
 }

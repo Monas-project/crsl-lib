@@ -7,6 +7,10 @@ use crate::convergence::policy::{MergePolicy, ResolveInput};
 pub struct LwwMergePolicy;
 
 impl<P: Clone> MergePolicy<P> for LwwMergePolicy {
+    fn requires_parent_payloads(&self) -> bool {
+        false
+    }
+
     fn resolve(&self, nodes: &[ResolveInput<P>]) -> P {
         let winner = nodes
             .iter()

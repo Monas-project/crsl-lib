@@ -1,5 +1,5 @@
 use crate::crdt::error::{CrdtError, Result};
-use crate::crdt::operation::Operation;
+use crate::crdt::operation::{Operation, OperationType};
 use crate::storage::{BatchError, LeveldbBatchGuard, SharedLeveldb, SharedLeveldbAccess};
 use bincode;
 use rusty_leveldb::LdbIterator;
@@ -7,6 +7,20 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 use ulid::Ulid;
+
+// Legacy records start with the bincode string length (26) of a ULID.
+// A distinct versioned envelope prevents truncated new metadata from ever
+// being accepted as a legacy operation with default policy metadata.
+const OPERATION_V1: &[u8] = b"CRSLop\x01";
+type LegacyOperation<ContentId, T> = (
+    Ulid,
+    ContentId,
+    OperationType<T>,
+    u64,
+    String,
+    Vec<ContentId>,
+    Option<u64>,
+);
 
 /// Abstraction over the persistent storage used by `CrdtState`.
 pub trait OperationStorage<ContentId, T>: Send + Sync {
@@ -20,6 +34,10 @@ pub trait OperationStorage<ContentId, T>: Send + Sync {
 }
 
 /// LevelDB-backed implementation of [`OperationStorage`].
+///
+/// Reads legacy unversioned bincode operations and versioned records carrying
+/// node metadata. New writes use the versioned format; older library versions
+/// cannot read them. Invalid records are errors, never silently skipped.
 #[derive(Clone)]
 pub struct LeveldbStorage<ContentId, T> {
     shared: Arc<SharedLeveldb>,
@@ -53,8 +71,54 @@ impl<ContentId, T> LeveldbStorage<ContentId, T> {
         ContentId: serde::Serialize,
         T: serde::Serialize,
     {
-        let value = bincode::serde::encode_to_vec(op, bincode::config::standard())?;
+        let mut value = OPERATION_V1.to_vec();
+        value.extend(bincode::serde::encode_to_vec(
+            op,
+            bincode::config::standard(),
+        )?);
         Ok(value)
+    }
+
+    fn decode_operation(raw: &[u8]) -> Result<Operation<ContentId, T>>
+    where
+        ContentId: for<'de> serde::Deserialize<'de>,
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        let (op, consumed, expected) = if let Some(body) = raw.strip_prefix(OPERATION_V1) {
+            let (op, consumed) =
+                bincode::serde::decode_from_slice(body, bincode::config::standard())?;
+            (op, consumed, body.len())
+        } else if raw.first() == Some(&26) {
+            let ((id, genesis, kind, timestamp, author, parents, node_timestamp), consumed) =
+                bincode::serde::decode_from_slice::<LegacyOperation<ContentId, T>, _>(
+                    raw,
+                    bincode::config::standard(),
+                )?;
+            (
+                Operation {
+                    id,
+                    genesis,
+                    kind,
+                    timestamp,
+                    author,
+                    parents,
+                    node_timestamp,
+                    node_metadata: None,
+                },
+                consumed,
+                raw.len(),
+            )
+        } else {
+            return Err(CrdtError::Internal(
+                "Unknown operation storage format".into(),
+            ));
+        };
+        if consumed != expected {
+            return Err(CrdtError::Internal(
+                "Trailing bytes in stored operation".into(),
+            ));
+        }
+        Ok(op)
     }
 
     /// Writes value bytes either to the active batch or directly to the DB.
@@ -117,10 +181,8 @@ where
         let mut value = Vec::new();
         while iter.valid() {
             iter.current(&mut key, &mut value);
-            if let Ok((op, _)) = bincode::serde::decode_from_slice::<Operation<ContentId, T>, _>(
-                &value,
-                bincode::config::standard(),
-            ) {
+            if key.first() == Some(&0x01) {
+                let op = Self::decode_operation(&value)?;
                 if op.genesis == *genesis {
                     result.push(op);
                 }
@@ -134,13 +196,7 @@ where
     fn get_operation(&self, op_id: &Ulid) -> Result<Option<Operation<ContentId, T>>> {
         let key = Self::make_key(op_id);
         match self.shared.db().get(&key) {
-            Some(raw) => {
-                let (op, _) = bincode::serde::decode_from_slice::<Operation<ContentId, T>, _>(
-                    &raw,
-                    bincode::config::standard(),
-                )?;
-                Ok(Some(op))
-            }
+            Some(raw) => Self::decode_operation(&raw).map(Some),
             None => Ok(None),
         }
     }

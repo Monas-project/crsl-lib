@@ -52,7 +52,7 @@ where
             ));
         }
 
-        let inputs = self.collect_inputs(heads, dag)?;
+        let inputs = self.collect_inputs(heads, dag, policy.requires_parent_payloads())?;
         let merged_payload = policy.resolve(&inputs);
         let metadata = self.merge_metadata(heads, dag)?;
         Ok(Node::new_child(
@@ -68,6 +68,7 @@ where
         &self,
         heads: &[Cid],
         dag: &DagGraph<S, P, M>,
+        requires_parent_payloads: bool,
     ) -> CrdtResult<Vec<ResolveInput<P>>>
     where
         S: NodeStorage<P, M>,
@@ -80,12 +81,16 @@ where
                 .get_node(&cid)
                 .map_err(CrdtError::Graph)?
                 .ok_or_else(|| CrdtError::Internal(format!("Head node not found: {cid}")))?;
-            // A parent that is not in storage is not an error here: a replica
-            // may hold a head whose ancestry has not fully synced yet. The
-            // policy sees fewer parents and must cope (LWW never looks).
-            let mut parent_payloads = Vec::with_capacity(node.parents().len());
-            for parent in node.parents() {
-                if let Some(parent_node) = dag.get_node(parent).map_err(CrdtError::Graph)? {
+            let mut parent_payloads = Vec::new();
+            if requires_parent_payloads {
+                parent_payloads.reserve(node.parents().len());
+                for parent in node.parents() {
+                    let parent_node =
+                        dag.get_node(parent)
+                            .map_err(CrdtError::Graph)?
+                            .ok_or(CrdtError::Graph(
+                                crate::graph::error::GraphError::NodeNotFound(*parent),
+                            ))?;
                     parent_payloads.push(parent_node.payload().clone());
                 }
             }
