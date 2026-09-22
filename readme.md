@@ -74,6 +74,34 @@ fn main() {
 }
 ```
 
+### Application-supplied merge policies
+
+`Repo::with_merge_policy` supplies an implementation of `MergePolicy` for a
+named custom policy. A locally created history records its selected policy in
+the genesis metadata. Subsequent automatic merges, including `merge_heads`,
+select the implementation named by that genesis; installing a different custom
+policy does not override an existing history's choice. Histories using `lww`
+continue to use the built-in LWW implementation. An unavailable custom policy
+causes a merge error rather than a fallback to a different rule.
+
+The application owns the custom policy's semantics and must deploy compatible,
+convergent implementations to its replicas. Policy names are identifiers, not
+proof that two implementations behave identically: use a new name when changing
+semantics. This API does not migrate existing histories to a new policy, nor does
+it prove that an imported merge payload was computed correctly.
+
+Parent-dependent policies require all immediate-parent payloads before a merge
+can be saved. If a parent has not synced, import it and retry. Policies independent
+of parents can opt out with `MergePolicy::requires_parent_payloads`.
+
+Replication must preserve `Operation::node_metadata` as well as the node
+timestamp. The metadata is the exact serialized value, not just a policy name;
+replacing it with local defaults can change the node's CID. Legacy operations
+without this field remain readable. Newly written LevelDB operations use a
+versioned storage format: this version reads old records, but older binaries
+cannot read the new records. Do not downgrade a database after writing with this
+version. Older replicas are not compatible with new custom-policy histories.
+
 ## 🖥️ CLI Tool
 
 CRSL includes a command-line interface for easy content management.

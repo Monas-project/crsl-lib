@@ -36,6 +36,8 @@ where
     pub state: CrdtState<Cid, Payload, OpStore, LwwReducer>,
     pub dag: DagGraph<NodeStore, Payload, ContentMetadata>,
     resolver: ConflictResolver<Payload, ContentMetadata>,
+    /// Application-supplied implementation selected by genesis policy name.
+    merge_policy: Option<Box<dyn MergePolicy<Payload>>>,
 }
 
 impl<OpStore, NodeStore, Payload> Repo<OpStore, NodeStore, Payload>
@@ -52,7 +54,41 @@ where
             state,
             dag,
             resolver: ConflictResolver::new(),
+            merge_policy: None,
         }
+    }
+
+    /// Install one named application-supplied [`MergePolicy`] for auto-merges.
+    ///
+    /// The library's only built-in policy is last-writer-wins over the whole
+    /// payload: whichever head has the newest timestamp is copied into the
+    /// merge node. That is right for a payload that is one value. It is wrong
+    /// for a payload that is several — a content body next to an access
+    /// policy, say — where a head that only advanced one field must not carry
+    /// the *other* field's stale value over a concurrent head that changed
+    /// it. The library cannot merge such a payload field by field, because
+    /// it does not know the fields; the application does, so it passes the
+    /// rule in here.
+    ///
+    /// Genesis metadata is authoritative: this implementation is used only
+    /// for its matching name. `lww` always selects the built-in rule; unknown
+    /// custom names error rather than fall back. A local Create records this
+    /// name unless `Operation::node_metadata` is explicitly supplied. Imports
+    /// use their own metadata, never the receiver's installed policy.
+    ///
+    /// Every replica merging a custom-policy content must install an
+    /// implementation with the same name and deterministic semantics. The
+    /// name travels with the data; executable code is process-local. Installing
+    /// another implementation does not migrate existing content.
+    ///
+    /// Policies require complete immediate-parent payloads by default. If a
+    /// parent has not synced, both lazy auto-merge and [`Self::merge_heads`]
+    /// return an error without committing a merge. Retry after importing the
+    /// missing parents. A policy independent of parent payloads can opt out
+    /// through [`MergePolicy::requires_parent_payloads`].
+    pub fn with_merge_policy(mut self, policy: Box<dyn MergePolicy<Payload>>) -> Self {
+        self.merge_policy = Some(policy);
+        self
     }
 
     /// Commits an operation to the repository.
@@ -60,6 +96,12 @@ where
     /// If `op.node_timestamp` is set, the operation is treated as an import from
     /// another replica, preserving the original timestamp for CID consistency.
     /// Otherwise, the current time is used for the DAG node timestamp.
+    /// Successful commits store the exact node timestamp and metadata on the
+    /// operation for subsequent export. Imported Create CIDs are checked;
+    /// imported Merge payloads are trusted, not recomputed by the local policy.
+    /// Child policy names are checked against genesis when it is available.
+    /// Out-of-order imports are checked again as heads before a merge; this is
+    /// not a validation of every ancestor or of the imported payload semantics.
     ///
     /// # Arguments
     ///
@@ -88,6 +130,48 @@ where
 
     pub fn latest(&self, genesis_id: &Cid) -> Option<Cid> {
         self.dag.calculate_latest(genesis_id).ok().flatten()
+    }
+
+    /// The current heads of a content: every node no other node names as a
+    /// parent. One head means the history is linear at the tip; more means
+    /// concurrent versions are waiting to be merged.
+    pub fn heads(&self, genesis: &Cid) -> Result<Vec<Cid>> {
+        self.find_heads(genesis)
+    }
+
+    /// Merge concurrent heads now, and return the resulting single head.
+    ///
+    /// Auto-merge normally runs lazily, inside the next commit. That is too
+    /// late for a caller that wants to *read* the converged state first —
+    /// to copy the current payload into a new version, or to evaluate a
+    /// policy it carries — because [`latest`](Self::latest) alone picks one
+    /// of the concurrent heads by timestamp and says nothing about the
+    /// others. Calling this first makes the read see what the merge policy
+    /// decides, not what one branch happens to hold.
+    ///
+    /// Commits the merge node exactly as the lazy path would; returns
+    /// `Ok(None)` when the content has no versions, and the existing head
+    /// when there was nothing to merge.
+    pub fn merge_heads(&mut self, genesis: &Cid) -> Result<Option<Cid>> {
+        let shared = self.shared_leveldb()?;
+        let batch_guard = Self::begin_shared_batch(&shared)?;
+        let mut pending_nodes: Vec<PendingNode> = Vec::new();
+
+        let merged = match self.check_and_merge(genesis, &mut pending_nodes) {
+            Ok(merged) => merged,
+            Err(err) => {
+                self.rollback_pending_nodes(&pending_nodes);
+                return Err(err);
+            }
+        };
+        if let Err(status) = batch_guard.commit() {
+            self.rollback_pending_nodes(&pending_nodes);
+            return Err(CrdtError::Storage(status));
+        }
+        match merged {
+            Some(cid) => Ok(Some(cid)),
+            None => self.dag.calculate_latest(genesis).map_err(CrdtError::Graph),
+        }
     }
 
     /// Convenience wrapper around `DagGraph::get_genesis`
@@ -227,6 +311,9 @@ where
             }
         };
 
+        // Persist the exact reconstruction inputs, not the receiver's defaults.
+        op.node_timestamp = Some(timestamp);
+        op.node_metadata = pending_nodes.last().map(|node| node.metadata.clone());
         if let Err(err) = self.state.apply(op) {
             self.rollback_pending_nodes(&pending_nodes);
             return Err(err);
@@ -306,9 +393,20 @@ where
         timestamp: u64,
         pending_nodes: &mut Vec<PendingNode>,
     ) -> Result<Cid> {
-        let (genesis_cid, node) =
-            self.dag
-                .prepare_genesis_node(payload, timestamp, ContentMetadata::default())?;
+        let metadata = if let Some(metadata) = &op.node_metadata {
+            metadata.clone()
+        } else if op.node_timestamp.is_some() {
+            ContentMetadata::default()
+        } else {
+            self.merge_policy
+                .as_ref()
+                .map_or_else(ContentMetadata::default, |policy| {
+                    ContentMetadata::with_policy(policy.name())
+                })
+        };
+        let (genesis_cid, node) = self
+            .dag
+            .prepare_genesis_node(payload, timestamp, metadata)?;
 
         if op.node_timestamp.is_some() {
             // Import: verify that the computed CID matches the expected genesis
@@ -335,8 +433,12 @@ where
         pending_nodes: &mut Vec<PendingNode>,
     ) -> Result<Cid> {
         let lenient = op.node_timestamp.is_some();
-        let metadata =
-            self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), lenient)?;
+        let metadata = match &op.node_metadata {
+            Some(metadata) if lenient => metadata.clone(),
+            _ => {
+                self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), lenient)?
+            }
+        };
         let (cid, node) = self.dag.prepare_child_node(
             payload,
             op.parents.clone(),
@@ -373,8 +475,12 @@ where
             })?;
 
         let lenient = op.node_timestamp.is_some();
-        let metadata =
-            self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), lenient)?;
+        let metadata = match &op.node_metadata {
+            Some(metadata) if lenient => metadata.clone(),
+            _ => {
+                self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), lenient)?
+            }
+        };
         let (cid, node) = self.dag.prepare_child_node(
             last_payload,
             op.parents.clone(),
@@ -394,8 +500,12 @@ where
         pending_nodes: &mut Vec<PendingNode>,
     ) -> Result<Cid> {
         // Merge operations are always imports, so use lenient metadata resolution
-        let metadata =
-            self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), true)?;
+        let metadata = match &op.node_metadata {
+            Some(metadata) => metadata.clone(),
+            None => {
+                self.resolve_metadata(&op.genesis, &op.parents, pending_nodes.as_slice(), true)?
+            }
+        };
         let (cid, node) = self.dag.prepare_child_node(
             payload,
             op.parents.clone(),
@@ -422,6 +532,11 @@ where
         cid: Cid,
         node: &Node<Payload, ContentMetadata>,
     ) -> Result<PendingNode> {
+        if let Some(genesis) = node.genesis {
+            if let Some(root) = self.dag.get_node(&genesis).map_err(CrdtError::Graph)? {
+                Self::validate_policy_binding(node.metadata(), root.metadata())?;
+            }
+        }
         self.dag.storage.put(node).map_err(CrdtError::Graph)?;
         self.dag
             .register_prepared_node(cid, node)
@@ -462,8 +577,17 @@ where
             .get_node(genesis)
             .map_err(CrdtError::Graph)?
             .ok_or_else(|| CrdtError::Internal(format!("Genesis not found: {genesis}")))?;
-        let policy_type = genesis_node.metadata().policy_type();
-        let policy = self.create_policy(policy_type)?;
+        // Out-of-order imports may have arrived before the genesis. Check
+        // every head now, before invoking a policy or persisting any merge.
+        for head in &heads {
+            let node = self
+                .dag
+                .get_node(head)
+                .map_err(CrdtError::Graph)?
+                .ok_or_else(|| CrdtError::Internal(format!("Head node not found: {head}")))?;
+            Self::validate_policy_binding(node.metadata(), genesis_node.metadata())?;
+        }
+        let policy = self.create_policy(genesis_node.metadata().policy_type())?;
 
         self.validate_parent_genesis(genesis, &heads)?;
 
@@ -473,7 +597,7 @@ where
             &self.dag,
             *genesis,
             merge_timestamp,
-            policy.as_ref(),
+            policy,
         )?;
 
         let (merge_cid, node) = self
@@ -494,6 +618,8 @@ where
             "auto-merge".to_string(),
         );
         merge_op.parents = heads;
+        merge_op.node_timestamp = Some(merge_timestamp);
+        merge_op.node_metadata = Some(merge_node.metadata().clone());
         if let Err(err) = self.state.apply(merge_op) {
             self.dag
                 .rollback_pending_node(&pending.cid, &pending.parents);
@@ -533,10 +659,25 @@ where
             .collect())
     }
 
-    fn create_policy(&self, policy_type: &str) -> Result<Box<dyn MergePolicy<Payload>>> {
-        match policy_type {
-            "lww" => Ok(Box::new(LwwMergePolicy)),
-            other => Err(CrdtError::Internal(format!("Unknown policy type: {other}"))),
+    fn validate_policy_binding(
+        metadata: &ContentMetadata,
+        genesis: &ContentMetadata,
+    ) -> Result<()> {
+        if metadata.policy_type() != genesis.policy_type() {
+            return Err(CrdtError::Internal(format!(
+                "Policy mismatch: genesis requires {}, node declares {}",
+                genesis.policy_type(),
+                metadata.policy_type()
+            )));
+        }
+        Ok(())
+    }
+
+    fn create_policy(&self, policy_type: &str) -> Result<&dyn MergePolicy<Payload>> {
+        match (policy_type, self.merge_policy.as_deref()) {
+            ("lww", _) => Ok(&LwwMergePolicy),
+            (name, Some(policy)) if policy.name() == name => Ok(policy),
+            (other, _) => Err(CrdtError::Internal(format!("Unknown policy type: {other}"))),
         }
     }
 
@@ -1380,6 +1521,177 @@ mod tests {
         assert_eq!(heads_after_merge.len(), 1);
         assert!(!heads_after_merge.contains(&branch1_cid));
         assert!(!heads_after_merge.contains(&branch2_cid));
+    }
+
+    /// A policy installed with `with_merge_policy` is recorded in a local
+    /// genesis and decides that content's merge payload. It sees each
+    /// head's parent payloads, so it can tell what a head changed.
+    #[test]
+    fn installed_merge_policy_is_used_and_sees_parents() {
+        use crate::convergence::policy::{MergePolicy, ResolveInput};
+        use std::sync::{Arc, Mutex};
+
+        /// Concatenates every head that differs from its parent, in CID order,
+        /// and records what it was given. Deliberately not LWW so the test can
+        /// tell the two apart.
+        type Seen = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+        struct Concat {
+            seen: Seen,
+        }
+        impl MergePolicy<TestPayload> for Concat {
+            fn resolve(&self, nodes: &[ResolveInput<TestPayload>]) -> TestPayload {
+                let mut seen = self.seen.lock().unwrap();
+                for n in nodes {
+                    seen.push((
+                        n.payload.0.clone(),
+                        n.parent_payloads.iter().map(|p| p.0.clone()).collect(),
+                    ));
+                }
+                let mut changed: Vec<&str> = nodes
+                    .iter()
+                    .filter(|n| n.parent_payloads.iter().all(|p| p != &n.payload))
+                    .map(|n| n.payload.0.as_str())
+                    .collect();
+                changed.sort();
+                TestPayload(changed.join("+"))
+            }
+            fn name(&self) -> &str {
+                "concat"
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (repo, _dir) = setup_test_repo();
+        let mut repo = repo.with_merge_policy(Box::new(Concat { seen: seen.clone() }));
+
+        let initial_genesis = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"installedPolicy").unwrap(),
+        );
+        let create = make_test_operation(
+            initial_genesis,
+            OperationType::Create(TestPayload("root".into())),
+        );
+        let genesis = repo.commit_operation(create).unwrap();
+
+        // Two concurrent heads off the genesis. One repeats its parent's value
+        // (a "policy-only" head, as far as this payload can express it).
+        let mut a = make_test_operation(genesis, OperationType::Update(TestPayload("a".into())));
+        a.parents.push(genesis);
+        repo.commit_operation(a).unwrap();
+        sleep_for_ordering();
+        let mut same =
+            make_test_operation(genesis, OperationType::Update(TestPayload("root".into())));
+        same.parents.push(genesis);
+        repo.commit_operation(same).unwrap();
+        sleep_for_ordering();
+
+        // Triggers the auto-merge.
+        let update = make_test_operation(genesis, OperationType::Update(TestPayload("z".into())));
+        repo.commit_operation(update).unwrap();
+
+        let ops = repo.state.get_operations_by_genesis(&genesis).unwrap();
+        let merge = ops
+            .iter()
+            .find_map(|op| match &op.kind {
+                OperationType::Merge(p) => Some(p.clone()),
+                _ => None,
+            })
+            .expect("auto-merge must have run");
+        // LWW would have picked "root" (the newer head); the installed policy
+        // kept only the head that changed something.
+        assert_eq!(merge, TestPayload("a".into()));
+
+        // Both heads were handed over with their parent ("root") attached.
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        for (_, parents) in seen.iter() {
+            assert_eq!(parents, &vec!["root".to_string()]);
+        }
+    }
+
+    /// `merge_heads` converges concurrent heads on demand, so a caller can
+    /// read the merged payload before committing on top of it. Without it,
+    /// `latest` returns one branch's tip and the merge only happens inside
+    /// the next commit — after the caller has already copied the wrong value.
+    #[test]
+    fn merge_heads_converges_before_the_next_commit() {
+        let (mut repo, _dir) = setup_test_repo();
+        let initial_genesis = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"mergeHeads").unwrap(),
+        );
+        let create = make_test_operation(
+            initial_genesis,
+            OperationType::Create(TestPayload("root".into())),
+        );
+        let genesis = repo.commit_operation(create).unwrap();
+        let mut a = make_test_operation(genesis, OperationType::Update(TestPayload("a".into())));
+        a.parents.push(genesis);
+        let a_cid = repo.commit_operation(a).unwrap();
+        sleep_for_ordering();
+        let mut b = make_test_operation(genesis, OperationType::Update(TestPayload("b".into())));
+        b.parents.push(genesis);
+        let b_cid = repo.commit_operation(b).unwrap();
+
+        assert_eq!(repo.heads(&genesis).unwrap().len(), 2);
+        // `latest` alone just picks the newer branch.
+        assert_eq!(repo.latest(&genesis), Some(b_cid));
+
+        let merged = repo.merge_heads(&genesis).unwrap().unwrap();
+        assert_ne!(merged, a_cid);
+        assert_ne!(merged, b_cid);
+        assert_eq!(repo.heads(&genesis).unwrap(), vec![merged]);
+        assert_eq!(repo.latest(&genesis), Some(merged));
+        let node = repo.dag.get_node(&merged).unwrap().unwrap();
+        assert_eq!(node.parents().len(), 2);
+
+        // Idempotent: nothing left to merge, same head comes back.
+        assert_eq!(repo.merge_heads(&genesis).unwrap(), Some(merged));
+        // Unknown content: nothing to merge, no head.
+        let unknown = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"nothing").unwrap(),
+        );
+        assert_eq!(repo.merge_heads(&unknown).unwrap(), None);
+    }
+
+    /// Without an installed policy, the genesis metadata's policy_type still
+    /// selects the built-in LWW — the extension point changes nothing for
+    /// callers that do not use it.
+    #[test]
+    fn named_policy_still_applies_when_none_installed() {
+        let (mut repo, _dir) = setup_test_repo();
+        let initial_genesis = Cid::new_v1(
+            0x55,
+            multihash::Multihash::<64>::wrap(0x12, b"namedPolicy").unwrap(),
+        );
+        let create = make_test_operation(
+            initial_genesis,
+            OperationType::Create(TestPayload("root".into())),
+        );
+        let genesis = repo.commit_operation(create).unwrap();
+        let mut a = make_test_operation(genesis, OperationType::Update(TestPayload("a".into())));
+        a.parents.push(genesis);
+        repo.commit_operation(a).unwrap();
+        sleep_for_ordering();
+        let mut b = make_test_operation(genesis, OperationType::Update(TestPayload("b".into())));
+        b.parents.push(genesis);
+        repo.commit_operation(b).unwrap();
+        sleep_for_ordering();
+        let update = make_test_operation(genesis, OperationType::Update(TestPayload("z".into())));
+        repo.commit_operation(update).unwrap();
+
+        let ops = repo.state.get_operations_by_genesis(&genesis).unwrap();
+        let merge = ops
+            .iter()
+            .find_map(|op| match &op.kind {
+                OperationType::Merge(p) => Some(p.clone()),
+                _ => None,
+            })
+            .expect("auto-merge must have run");
+        // LWW: the later head wins outright.
+        assert_eq!(merge, TestPayload("b".into()));
     }
 
     #[test]
